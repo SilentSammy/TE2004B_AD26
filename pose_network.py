@@ -1,4 +1,5 @@
 import json
+import math
 import socket
 import time
 
@@ -16,7 +17,13 @@ class PosePublisher:
         self.subscribers = {}
         self.sequence = 0
 
-    def publish(self, board_visible, poses):
+    def publish(
+        self,
+        board_visible,
+        poses,
+        frame_sequence=None,
+        capture_time_ns=None,
+    ):
         now = time.monotonic()
 
         while True:
@@ -33,14 +40,19 @@ class PosePublisher:
             if expiry > now
         }
         self.sequence += 1
-        message = json.dumps({
+        message = {
             "version": 1,
             "type": "poses",
             "sequence": self.sequence,
             "sent_time_ns": time.time_ns(),
             "board_visible": board_visible,
             "poses": poses,
-        }, separators=(",", ":")).encode()
+        }
+        if frame_sequence is not None:
+            message["frame_sequence"] = frame_sequence
+        if capture_time_ns is not None:
+            message["capture_time_ns"] = capture_time_ns
+        message = json.dumps(message, separators=(",", ":")).encode()
 
         for address in self.subscribers:
             try:
@@ -91,3 +103,39 @@ class PoseSubscriber:
 
     def close(self):
         self.socket.close()
+
+
+if __name__ == "__main__":
+    publisher = PosePublisher()
+    started = time.monotonic()
+    print(f"Publishing dummy poses on UDP port {POSE_PORT}. Press Ctrl+C to stop.")
+    try:
+        while True:
+            t = time.monotonic() - started
+            dummy_poses = [
+                {
+                    "id": 5,
+                    "x": 0.20 * math.cos(t),
+                    "y": 0.20 * math.sin(t),
+                    "theta": (t + 3 * math.pi / 2) % (2 * math.pi) - math.pi,
+                    "size": 0.08,
+                    "tracked": False,
+                },
+                {
+                    "id": 6,
+                    "x": 0.25 * math.cos(-0.6 * t),
+                    "y": 0.15 * math.sin(-0.6 * t),
+                    "theta": math.atan2(
+                        -0.09 * math.cos(-0.6 * t),
+                        0.15 * math.sin(-0.6 * t),
+                    ),
+                    "size": 0.08,
+                    "tracked": False,
+                },
+            ]
+            publisher.publish(True, dummy_poses)
+            time.sleep(1 / 30)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        publisher.close()

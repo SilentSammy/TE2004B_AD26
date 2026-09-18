@@ -3,7 +3,6 @@ param(
     [Parameter(Mandatory)]
     [string]$DesktopHost,
 
-    [Parameter(Mandatory)]
     [string]$DesktopRepoPath,
 
     [string]$Branch = "main",
@@ -56,13 +55,28 @@ git push $Remote $Branch
 if ($LASTEXITCODE -ne 0) { throw "git push failed; the desktop was not changed." }
 
 # Escape values for single-quoted PowerShell strings evaluated on the desktop.
-$quotedPath = $DesktopRepoPath.Replace("'", "''")
 $quotedBranch = $Branch.Replace("'", "''")
 $quotedRemote = $Remote.Replace("'", "''")
+
+if ([string]::IsNullOrWhiteSpace($DesktopRepoPath)) {
+    $remotePathSetup = @"
+`$repoPathFile = Join-Path `$env:LOCALAPPDATA 'TE2004B_AD26\repo-path.txt'
+if (-not (Test-Path -LiteralPath `$repoPathFile -PathType Leaf)) {
+    throw 'Desktop repository location is not registered. Run setup-desktop.cmd on the desktop first.'
+}
+`$desktopRepo = (Get-Content -LiteralPath `$repoPathFile -Raw).Trim()
+"@
+}
+else {
+    $quotedPath = $DesktopRepoPath.Replace("'", "''")
+    $remotePathSetup = "`$desktopRepo = '$quotedPath'"
+}
+
 $remoteCommand = @"
-Set-Location -LiteralPath '$quotedPath'
+`$ErrorActionPreference = 'Stop'
+$remotePathSetup
+Set-Location -LiteralPath `$desktopRepo
 & .\scripts\update-desktop-repo.ps1 -Branch '$quotedBranch' -Remote '$quotedRemote'
-if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 "@
 
 ssh $DesktopHost powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $remoteCommand

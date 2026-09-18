@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $requirementsPath = Join-Path $repoRoot "requirements.txt"
-$venvPath = "$repoRoot-venv"
+$venvPath = Join-Path $env:LocalAppData "TE2004B_AD26\venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 
 if (-not (Test-Path -LiteralPath $requirementsPath -PathType Leaf)) {
@@ -46,22 +46,80 @@ function Find-Python311 {
     return $null
 }
 
+function Install-Python311 {
+    Write-Host "Python 3.11 is not installed. Choose where to install it:"
+    Write-Host "  1. Current Windows user only (no administrator password)"
+    Write-Host "  2. All Windows users (administrator password required)"
+    $choice = Read-Host "Selection [1]"
+    if ([string]::IsNullOrWhiteSpace($choice)) { $choice = "1" }
+    if ($choice -notin @("1", "2")) {
+        throw "Invalid selection. Run setup-desktop.cmd again and choose 1 or 2."
+    }
+
+    if (-not [Environment]::Is64BitOperatingSystem) {
+        throw "This automatic installer currently supports 64-bit Windows only."
+    }
+
+    $installerUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
+    $installerPath = Join-Path $env:TEMP "te2004b-python-3.11.9-amd64.exe"
+
+    Write-Host "Downloading the official Python 3.11.9 installer..."
+    Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+
+    try {
+        $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
+        if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notmatch "Python Software Foundation") {
+            throw "The downloaded Python installer does not have a valid Python Software Foundation signature."
+        }
+
+        if ($choice -eq "1") {
+            $targetDir = Join-Path $env:LocalAppData "Programs\Python\Python311"
+            $arguments = @(
+                "/quiet",
+                "InstallAllUsers=0",
+                "TargetDir=`"$targetDir`"",
+                "Include_launcher=0",
+                "InstallLauncherAllUsers=0",
+                "PrependPath=0",
+                "Include_test=0",
+                "Include_pip=1"
+            )
+            Write-Host "Installing Python for '$env:USERNAME' only..."
+            $process = Start-Process -FilePath $installerPath -ArgumentList $arguments -Wait -PassThru
+        }
+        else {
+            $targetDir = Join-Path $env:ProgramFiles "Python311"
+            $arguments = @(
+                "/quiet",
+                "InstallAllUsers=1",
+                "TargetDir=`"$targetDir`"",
+                "Include_launcher=1",
+                "InstallLauncherAllUsers=1",
+                "PrependPath=1",
+                "Include_test=0",
+                "Include_pip=1"
+            )
+            Write-Host "Requesting administrator approval for an all-users installation..."
+            $process = Start-Process -FilePath $installerPath -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+        }
+
+        if ($process.ExitCode -ne 0) {
+            throw "Python installation failed with exit code $($process.ExitCode)."
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $installerPath -PathType Leaf) {
+            Remove-Item -LiteralPath $installerPath -Force
+        }
+    }
+}
+
 $python = Find-Python311
 if (-not $python) {
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if (-not $winget) {
-        throw "Python 3.11 is missing and winget is unavailable. Install Python 3.11 from https://www.python.org/downloads/windows/ and run setup-desktop.cmd again."
-    }
-
-    Write-Host "Python 3.11 was not found. Installing it now..."
-    & $winget.Source install --id Python.Python.3.11 --exact --scope user --silent --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) {
-        throw "Python installation failed with exit code $LASTEXITCODE."
-    }
-
+    Install-Python311
     $python = Find-Python311
     if (-not $python) {
-        throw "Python was installed but could not be located. Close PowerShell, reopen it, and run setup-desktop.cmd again."
+        throw "Python was installed but could not be located. Run setup-desktop.cmd again."
     }
 }
 
@@ -81,7 +139,13 @@ if ($LASTEXITCODE -ne 0) { throw "Could not install the application dependencies
 & $venvPython -c "import cv2, inputs, numpy; assert hasattr(cv2, 'aruco')"
 if ($LASTEXITCODE -ne 0) { throw "Dependency verification failed." }
 
+$stateDirectory = Join-Path $env:LocalAppData "TE2004B_AD26"
+$repoPathFile = Join-Path $stateDirectory "repo-path.txt"
+New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
+Set-Content -LiteralPath $repoPathFile -Value $repoRoot -NoNewline
+
 Write-Host ""
 Write-Host "Desktop setup is complete." -ForegroundColor Green
+Write-Host "Registered repository: $repoRoot"
 Write-Host "Run the application with:"
-Write-Host "  $venvPython $repoRoot\main.py"
+Write-Host "  & '$venvPython' '$repoRoot\main.py'"
