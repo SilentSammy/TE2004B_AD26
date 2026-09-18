@@ -14,18 +14,18 @@ git clone https://github.com/SilentSammy/TE2004B_AD26.git C:\Apps\TE2004B_AD26
 cd C:\Apps\TE2004B_AD26
 ```
 
-Keep virtual environments, secrets, recordings, and other desktop-only data
-outside `C:\Apps\TE2004B_AD26`. Each deployment removes ignored as well as
-untracked files from inside the clone.
-
-Create the desktop's Python 3.11 environment outside the clone and install the
-host application dependencies:
+Run the one-step setup. It finds Python 3.11 or installs it through Windows
+Package Manager, creates an environment outside the clone, and installs all
+dependencies:
 
 ```powershell
-py -3.11 -m venv C:\Apps\TE2004B_AD26-venv
-C:\Apps\TE2004B_AD26-venv\Scripts\python.exe -m pip install --upgrade pip
-C:\Apps\TE2004B_AD26-venv\Scripts\python.exe -m pip install -r .\requirements.txt
+.\setup-desktop.cmd
 ```
+
+Keep secrets, recordings, and other desktop-only data outside
+`C:\Apps\TE2004B_AD26`. Each deployment removes ignored as well as untracked
+files from inside the clone. The setup script therefore places the environment
+at `C:\Apps\TE2004B_AD26-venv`.
 
 The files under `device_code` target MicroPython boards and are not included in
 `requirements.txt`; modules such as `machine` come from the device firmware.
@@ -33,7 +33,7 @@ The files under `device_code` target MicroPython boards and are not included in
 To update directly while sitting at the desktop, run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\update-desktop-repo.ps1
+.\update-desktop.cmd
 ```
 
 ## 2. Enable remote deployment
