@@ -88,7 +88,11 @@ class Camera:
 
     def release(self):
         """Release the underlying source when it supports release()."""
-        source = getattr(self.frame_getter, "cap", None)
-        if source is not None and hasattr(source, "release"):
-            source.release()
+        configured_source = getattr(self.frame_getter, "source", None)
+        if configured_source is not None and hasattr(configured_source, "release"):
+            configured_source.release()
+        else:
+            source = getattr(self.frame_getter, "cap", None)
+            if source is not None and hasattr(source, "release"):
+                source.release()
         self._released = True

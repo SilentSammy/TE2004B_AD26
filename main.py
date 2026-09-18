@@ -1,9 +1,12 @@
 import vision_setup
 import cv2
 import numpy as np
+import time
 from marker_tracker import MarkerTracker
 from pose_network import PosePublisher
 
+
+SHOW_BOARD_PLOT = True
 
 vision = vision_setup.VISION
 camera = vision.camera
@@ -12,9 +15,15 @@ board_estimator = vision.board_estimator
 marker_tracker = MarkerTracker()
 plotter = vision.plotter
 publisher = PosePublisher()
+fps_started = time.monotonic()
+fps_frames = 0
+capture_sequence = 0
+board_plot = plotter.render() if SHOW_BOARD_PLOT else None
+last_plot = 0.0
 
-cv2.namedWindow("Board", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("Board", 400, round(400 * plotter.height / plotter.width))
+if SHOW_BOARD_PLOT:
+    cv2.namedWindow("Board", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Board", 400, round(400 * plotter.height / plotter.width))
 
 try:
     while camera.isOpened():
@@ -66,11 +75,29 @@ try:
                 frame, label, tuple(center.astype(int)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2,
             )
-
         publisher.publish(board_result is not None, poses)
+        fps_frames += 1
+        now = time.monotonic()
+        if now - fps_started >= 2.0:
+            elapsed = now - fps_started
+            source = getattr(camera.frame_getter, "source", None)
+            captured = source.sequence - capture_sequence if source is not None else fps_frames
+            print(
+                f"Vision: {fps_frames / elapsed:.1f} FPS "
+                f"(camera {captured / elapsed:.1f} FPS)",
+                flush=True,
+            )
+            capture_sequence = source.sequence if source is not None else capture_sequence
+            fps_started = now
+            fps_frames = 0
         cv2.imshow("Camera 1", frame)
-        cv2.imshow("Board", plotter.render(plot_markers))
-        if cv2.waitKey(1) & 0xFF == ord("q"):
+        if SHOW_BOARD_PLOT:
+            if now - last_plot >= 0.1:
+                board_plot = plotter.render(plot_markers)
+                last_plot = now
+            cv2.imshow("Board", board_plot)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
             break
 finally:
     publisher.close()

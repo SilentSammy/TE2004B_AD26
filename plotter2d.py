@@ -15,6 +15,11 @@ class BoardPlotter2D:
         self.width = width_px
         self.height = round(world_height * self.scale)
         self.marker_sizes = {}
+        self.marker_images = {}
+        self.marker_source = np.array(
+            [[0, 0], [127, 0], [127, 127], [0, 127]], np.float32
+        )
+        self.marker_mask = np.full((128, 128), 255, np.uint8)
         self.background = np.full((self.height, self.width, 3), 255, np.uint8)
 
         board_image = board_config.generate_image(
@@ -73,24 +78,39 @@ class BoardPlotter2D:
             center - right + down,
         ], dtype=np.float32)
 
-        marker = cv2.aruco.generateImageMarker(
-            self.marker_dictionary, marker_id, 128
-        )
-        marker = cv2.cvtColor(marker, cv2.COLOR_GRAY2BGR)
-        source = np.array([[0, 0], [127, 0], [127, 127], [0, 127]], np.float32)
         destination = self._to_pixels(square)
-        transform = cv2.getPerspectiveTransform(source, destination)
+        x0 = max(0, int(np.floor(destination[:, 0].min())))
+        y0 = max(0, int(np.floor(destination[:, 1].min())))
+        x1 = min(self.width, int(np.ceil(destination[:, 0].max())) + 1)
+        y1 = min(self.height, int(np.ceil(destination[:, 1].max())) + 1)
+        if x1 <= x0 or y1 <= y0:
+            return
+
+        marker = self.marker_images.get(marker_id)
+        if marker is None:
+            marker = cv2.aruco.generateImageMarker(
+                self.marker_dictionary, marker_id, 128
+            )
+            marker = cv2.cvtColor(marker, cv2.COLOR_GRAY2BGR)
+            self.marker_images[marker_id] = marker
+
+        local_destination = destination - (x0, y0)
+        transform = cv2.getPerspectiveTransform(
+            self.marker_source, local_destination.astype(np.float32)
+        )
+        roi_size = (x1 - x0, y1 - y0)
         warped = cv2.warpPerspective(
-            marker, transform, (self.width, self.height),
+            marker, transform, roi_size,
             flags=cv2.INTER_NEAREST,
         )
         mask = cv2.warpPerspective(
-            np.full((128, 128), 255, np.uint8),
+            self.marker_mask,
             transform,
-            (self.width, self.height),
+            roi_size,
             flags=cv2.INTER_NEAREST,
         )
-        canvas[mask > 0] = warped[mask > 0]
+        region = canvas[y0:y1, x0:x1]
+        region[mask > 0] = warped[mask > 0]
 
         label_at = self._to_pixels([center])[0].astype(int)
         cv2.putText(

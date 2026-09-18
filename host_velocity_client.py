@@ -56,9 +56,18 @@ class DifferentialPWMClient:
         self.heartbeat_seconds = heartbeat_seconds
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sequence = 0
+        self._last_sequence: int | None = None
         self._cached_pwm: tuple[int, int] | None = None
         self._last_send = 0.0
         self._closed = False
+
+    @property
+    def last_pwm(self) -> tuple[int, int] | None:
+        return self._cached_pwm
+
+    @property
+    def last_sequence(self) -> int | None:
+        return self._last_sequence
 
     @staticmethod
     def _clamp_pwm(value: int | float) -> int:
@@ -73,6 +82,7 @@ class DifferentialPWMClient:
         if not force and command == self._cached_pwm and now - self._last_send < self.heartbeat_seconds:
             return
         self._socket.sendto(_packet(self._sequence, *command), self.target)
+        self._last_sequence = self._sequence
         self._sequence = (self._sequence + 1) & 0xFFFF
         self._cached_pwm = command
         self._last_send = now
