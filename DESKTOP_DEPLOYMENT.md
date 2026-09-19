@@ -34,6 +34,12 @@ remote deployments do not need a hard-coded path.
 The files under `device_code` target MicroPython boards and are not included in
 `requirements.txt`; modules such as `machine` come from the device firmware.
 
+Start the application from the repository in Command Prompt or PowerShell:
+
+```powershell
+.\run-app.cmd
+```
+
 To update directly while sitting at the desktop, run:
 
 ```powershell

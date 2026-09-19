@@ -1,3 +1,4 @@
+import argparse
 import math
 import time
 
@@ -29,13 +30,25 @@ def pose_to_corners(pose):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Plot the network pose feed.")
+    parser.add_argument(
+        "pose_server",
+        nargs="?",
+        default="127.0.0.1",
+        help="Pose detector hostname or IP (default: localhost)",
+    )
+    args = parser.parse_args()
+
     plotter = vision_setup.VISION.plotter
-    subscriber = PoseSubscriber()
+    subscriber = PoseSubscriber(args.pose_server)
     last_print = 0.0
 
     cv2.namedWindow("Board", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Board", 400, round(400 * plotter.height / plotter.width))
-    print(f"[{PROCESS_NAME}] Waiting for poses...", flush=True)
+    print(
+        f"[{PROCESS_NAME}] Waiting for poses from {args.pose_server}...",
+        flush=True,
+    )
 
     try:
         while True:

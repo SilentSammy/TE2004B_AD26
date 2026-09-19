@@ -148,4 +148,4 @@ Write-Host ""
 Write-Host "Desktop setup is complete." -ForegroundColor Green
 Write-Host "Registered repository: $repoRoot"
 Write-Host "Run the application with:"
-Write-Host "  & '$venvPython' '$repoRoot\main.py'"
+Write-Host "  .\run-app.cmd"
