@@ -86,7 +86,7 @@ def main():
                         label += f" ({x:.2f}, {-y:.2f}) m"
                         positions.append(f"{label} {angle:.0f} deg")
                         telemetry_markers.append(
-                            {"id": marker_id, "x": round(x, 2), "y": round(-y, 2), "angle": round(angle, 0)}
+                            {"id": marker_id, "x": round(x, 3), "y": round(-y, 3), "angle": round(angle, 0)}
                         )
 
                     cv2.polylines(frame, [image_corners.astype(np.int32)], True, (0, 255, 0), 2)
@@ -100,7 +100,7 @@ def main():
                 last_plot = vision_done
             if args.broadcast is not None and vision_done - last_telemetry >= telemetry_interval:
                 telemetry = {
-                    "timestamp": time.time(),
+                    "timestamp": round(time.time(), 3),
                     "board_detected": board_result is not None,
                     "markers": telemetry_markers,
                 }
