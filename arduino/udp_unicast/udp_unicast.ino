@@ -3,14 +3,15 @@
 #include <string.h>
 
 // Set these to the access point used for the current test.
-const char *WIFI_SSID = "YOUR_WIFI_SSID";
-const char *WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char *WIFI_SSID = "SammyPC";
+const char *WIFI_PASSWORD = "12345678";
 const uint16_t COMMAND_PORT = 4210;
 const uint16_t REGISTRATION_PORT = 4211;
 
 WiFiUDP udp;
 bool listening = false;
 unsigned long lastConnectAttempt = 0;
+unsigned long lastHeartbeat = 0;
 
 void announceTo(IPAddress address, uint16_t port) {
   if (udp.beginPacket(address, port)) {
@@ -49,7 +50,15 @@ void loop() {
       listening = false;
       Serial.println("WIFI LOST");
     }
-    if (millis() - lastConnectAttempt >= 5000) {
+    // Print heartbeat while trying to connect
+    unsigned long now = millis();
+    if (now - lastHeartbeat >= 2000) {
+      Serial.print("HEARTBEAT (WiFi status: ");
+      Serial.print(WiFi.status());
+      Serial.println(")");
+      lastHeartbeat = now;
+    }
+    if (now - lastConnectAttempt >= 5000) {
       WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
       lastConnectAttempt = millis();
     }

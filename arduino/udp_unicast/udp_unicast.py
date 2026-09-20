@@ -60,6 +60,26 @@ def serial_port(requested):
     )
 
 
+def guess_broadcast():
+    # Assumes a /24 subnet, true for every hotspot tested so far; pass
+    # --broadcast explicitly if your network uses a different subnet size.
+    local_ip = None
+    for probe_target in (("8.8.8.8", 80), ("224.0.0.1", 80)):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                # No packet sent; just picks the route/interface for that target.
+                # 224.0.0.1 (multicast) also works when hosting the hotspot,
+                # since there is no default route to the internet in that case.
+                probe.connect(probe_target)
+                local_ip = probe.getsockname()[0]
+                break
+        except OSError:
+            continue
+    if local_ip is None:
+        return "192.168.137.255"
+    return local_ip.rsplit(".", 1)[0] + ".255"
+
+
 def print_path_stats(label, samples, sent_count):
     print(f"{label}: acknowledged {len(samples)}/{sent_count}")
     if not samples:
@@ -125,8 +145,8 @@ def main():
     parser.add_argument("--port", help="Pico USB serial port, for example COM5")
     parser.add_argument(
         "--broadcast",
-        default="192.168.137.255",
-        help="hotspot subnet broadcast address (default: 192.168.137.255)",
+        default=guess_broadcast(),
+        help="hotspot subnet broadcast address (default: auto-detected from local IP)",
     )
     args = parser.parse_args()
 

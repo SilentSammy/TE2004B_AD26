@@ -1,17 +1,51 @@
 """Send LED commands by Wi-Fi broadcast; time USB-serial acknowledgments."""
 
 import argparse
-import msvcrt
+from contextlib import contextmanager
+import os
 import socket
 import statistics
 import struct
+import sys
 import time
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import select
+    import termios
+    import tty
 
 import serial
 from serial.tools import list_ports
 
 
 UDP_PORT = 4210
+
+
+@contextmanager
+def keyboard_reader():
+    if os.name == "nt":
+        def read_key():
+            return msvcrt.getwch() if msvcrt.kbhit() else None
+
+        yield read_key
+        return
+
+    if not sys.stdin.isatty():
+        raise SystemExit("Run this script in a terminal to read 0/1 without Enter.")
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    try:
+        def read_key():
+            if select.select([fd], [], [], 0)[0]:
+                return os.read(fd, 1).decode("ascii", errors="ignore")
+            return None
+
+        yield read_key
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 def serial_port(requested):
@@ -23,6 +57,26 @@ def serial_port(requested):
     raise SystemExit(
         "Specify --port COMx. Available ports: " + (", ".join(ports) or "none")
     )
+
+
+def guess_broadcast():
+    # Assumes a /24 subnet, true for every hotspot tested so far; pass
+    # --broadcast explicitly if your network uses a different subnet size.
+    local_ip = None
+    for probe_target in (("8.8.8.8", 80), ("224.0.0.1", 80)):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                # No packet sent; just picks the route/interface for that target.
+                # 224.0.0.1 (multicast) also works when hosting the hotspot,
+                # since there is no default route to the internet in that case.
+                probe.connect(probe_target)
+                local_ip = probe.getsockname()[0]
+                break
+        except OSError:
+            continue
+    if local_ip is None:
+        return "192.168.137.255"
+    return local_ip.rsplit(".", 1)[0] + ".255"
 
 
 def print_stats(samples, pending):
@@ -45,8 +99,8 @@ def main():
     parser.add_argument("--port", help="Pico USB serial port, for example COM5")
     parser.add_argument(
         "--broadcast",
-        default="192.168.137.255",
-        help="hotspot subnet broadcast address (default: 192.168.137.255)",
+        default=guess_broadcast(),
+        help="hotspot subnet broadcast address (default: auto-detected from local IP)",
     )
     args = parser.parse_args()
 
@@ -55,15 +109,16 @@ def main():
     sequence = 0
     line_buffer = bytearray()
 
-    with serial.Serial(serial_port(args.port), 115200, timeout=0) as pico:
+    with serial.Serial(serial_port(args.port), 115200, timeout=0) as pico, keyboard_reader() as read_key:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
             udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            print("Press 0 or 1 to control the LED; Ctrl+C to show statistics.")
+            print("Press 0 or 1; Ctrl+C for statistics.")
             print(f"Broadcasting to {args.broadcast}:{UDP_PORT}")
             try:
                 while True:
-                    if msvcrt.kbhit():
-                        key = msvcrt.getwch()
+                    key = read_key()
+                    if key is not None:
+                        key = key.lower()
                         if key == "\x03":
                             break
                         if key in ("0", "1"):
