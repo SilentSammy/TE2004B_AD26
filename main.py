@@ -8,7 +8,7 @@ import numpy as np
 
 from vision_setup import VISION
 
-TELEMETRY_PORT = 5000
+DEFAULT_TELEMETRY_PORT = 5000
 
 
 def main():
@@ -17,6 +17,12 @@ def main():
         "--broadcast",
         default=None,
         help="telemetry broadcast address; telemetry is not sent if omitted",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_TELEMETRY_PORT,
+        help=f"telemetry UDP port (default: {DEFAULT_TELEMETRY_PORT})",
     )
     parser.add_argument(
         "--rate",
@@ -98,7 +104,7 @@ def main():
                     "board_detected": board_result is not None,
                     "markers": telemetry_markers,
                 }
-                udp.sendto(json.dumps(telemetry).encode(), (args.broadcast, TELEMETRY_PORT))
+                udp.sendto(json.dumps(telemetry).encode(), (args.broadcast, args.port))
                 last_telemetry = vision_done
             plot_done = time.monotonic()
 
