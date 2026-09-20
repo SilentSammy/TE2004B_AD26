@@ -1,3 +1,6 @@
+import argparse
+import json
+import socket
 import time
 
 import cv2
@@ -5,18 +8,41 @@ import numpy as np
 
 from vision_setup import VISION
 
+TELEMETRY_PORT = 5000
+
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--broadcast",
+        default=None,
+        help="telemetry broadcast address; telemetry is not sent if omitted",
+    )
+    parser.add_argument(
+        "--rate",
+        type=float,
+        default=10.0,
+        help="telemetry send rate in Hz (default: 10)",
+    )
+    args = parser.parse_args()
+
+    if args.broadcast is None:
+        print("No --broadcast address given; telemetry will not be sent.")
+    telemetry_interval = 1 / args.rate if args.rate > 0 else float("inf")
+
     camera = VISION.camera
     estimator = VISION.board_estimator
     detector = VISION.detector
     plotter = VISION.plotter
 
+    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
     cv2.namedWindow("Camera", cv2.WINDOW_NORMAL)
     cv2.namedWindow("Board", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Board", 400, round(400 * plotter.height / plotter.width))
 
-    stats_at = last_plot = time.monotonic()
+    stats_at = last_plot = last_telemetry = time.monotonic()
     frames = read_time = vision_time = plot_time = 0.0
 
     try:
@@ -32,6 +58,7 @@ def main():
             corners, ids, _ = detector.detectMarkers(frame)
             markers = []
             positions = []
+            telemetry_markers = []
 
             if ids is not None:
                 for marker_id, detected_corners in zip(ids.flatten(), corners):
@@ -52,6 +79,9 @@ def main():
                         angle = np.degrees(np.arctan2(-forward[1], forward[0]))
                         label += f" ({x:.2f}, {-y:.2f}) m"
                         positions.append(f"{label} {angle:.0f} deg")
+                        telemetry_markers.append(
+                            {"id": marker_id, "x": round(x, 2), "y": round(-y, 2), "angle": round(angle, 0)}
+                        )
 
                     cv2.polylines(frame, [image_corners.astype(np.int32)], True, (0, 255, 0), 2)
                     cv2.putText(frame, label, tuple(image_corners.mean(axis=0).astype(int)),
@@ -62,6 +92,14 @@ def main():
             if vision_done - last_plot >= 0.1:
                 cv2.imshow("Board", plotter.render(markers))
                 last_plot = vision_done
+            if args.broadcast is not None and vision_done - last_telemetry >= telemetry_interval:
+                telemetry = {
+                    "timestamp": time.time(),
+                    "board_detected": board_result is not None,
+                    "markers": telemetry_markers,
+                }
+                udp.sendto(json.dumps(telemetry).encode(), (args.broadcast, TELEMETRY_PORT))
+                last_telemetry = vision_done
             plot_done = time.monotonic()
 
             frames += 1
@@ -84,6 +122,7 @@ def main():
             if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
                 break
     finally:
+        udp.close()
         camera.release()
         cv2.destroyAllWindows()
 

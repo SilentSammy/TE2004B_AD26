@@ -6,6 +6,7 @@ import os
 import socket
 import statistics
 import struct
+import subprocess
 import sys
 import time
 
@@ -60,21 +61,25 @@ def serial_port(requested):
 
 
 def guess_broadcast():
-    # Assumes a /24 subnet, true for every hotspot tested so far; pass
-    # --broadcast explicitly if your network uses a different subnet size.
-    local_ip = None
-    for probe_target in (("8.8.8.8", 80), ("224.0.0.1", 80)):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-                # No packet sent; just picks the route/interface for that target.
-                # 224.0.0.1 (multicast) also works when hosting the hotspot,
-                # since there is no default route to the internet in that case.
-                probe.connect(probe_target)
-                local_ip = probe.getsockname()[0]
-                break
-        except OSError:
-            continue
-    if local_ip is None:
+    # Read assigned addresses directly; works even with no default route,
+    # e.g. when this machine is hosting the hotspot itself.
+    try:
+        output = subprocess.check_output(["ip", "-o", "-4", "addr", "show"], text=True)
+        for line in output.splitlines():
+            fields = line.split()
+            if fields[1] != "lo" and "brd" in fields and "global" in fields:
+                return fields[fields.index("brd") + 1]
+    except (OSError, subprocess.CalledProcessError, IndexError, ValueError):
+        pass
+
+    # Fall back for platforms without `ip` (e.g. Windows): probe a route and
+    # assume a /24 subnet, true for every hotspot tested so far. Pass
+    # --broadcast explicitly if this guess is wrong.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 80))  # No packet sent; just picks a local route.
+            local_ip = probe.getsockname()[0]
+    except OSError:
         return "192.168.137.255"
     return local_ip.rsplit(".", 1)[0] + ".255"
 
