@@ -2,7 +2,7 @@
 #include <WiFiUdp.h>
 
 // Replace these with the network you want the Pico W to join.
-const char *WIFI_SSID = "SammyPC";
+const char *WIFI_SSID = "embedded";
 const char *WIFI_PASSWORD = "12345678";
 const uint16_t TELEMETRY_PORT = 5000;  // Public: anyone broadcasting here (e.g. main.py).
 const uint16_t COMMAND_PORT = 5001;    // Private: unicast packets sent to this Pico specifically.

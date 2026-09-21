@@ -92,6 +92,55 @@ Common cases:
 Avoid `255.255.255.255` (the "limited broadcast" address) — it is not
 reliably delivered on all networks and can silently drop most packets.
 
+## Example: deploying on a new machine
+
+These steps apply to any Ubuntu machine; the commands below use the lab
+desktop as a worked example.
+
+Clone and set up the environment:
+
+```bash
+git clone https://github.com/SilentSammy/TE2004B_AD26.git ~/Desktop/TE2004B_AD26
+cd ~/Desktop/TE2004B_AD26
+sudo apt install python3-venv   # only if `python3 -m venv` fails
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Grant camera and USB-serial access, then start a new terminal session (group
+changes only apply to new logins):
+
+```bash
+sudo usermod -a -G video,dialout "$USER"
+```
+
+If `python main.py` reports `can't open camera by index`, list the available
+indices and let the app's built-in fallback (it tries index `1`, then `0`)
+find the right one, or check `ls -l /dev/video*` to see what exists.
+
+### Hosting a Wi-Fi hotspot on this machine
+
+Useful when wireless devices (e.g. a Pico W) need to join without a router.
+Pick a Wi-Fi interface, an SSID, and a password (8+ characters):
+
+```bash
+nmcli device status                 # find the Wi-Fi interface name
+nmcli device wifi hotspot ifname wlo1 ssid embedded band bg password 12345678
+ip -4 addr show dev wlo1            # confirm the assigned IP and `brd` address
+```
+
+For example, the lab desktop's hotspot uses SSID `embedded` / password
+`12345678`, and typically assigns itself `10.42.0.1/24` with broadcast
+`10.42.0.255` — but always confirm with the command above, since NetworkManager
+can pick a different subnet.
+
+### Running
+
+```bash
+python main.py --broadcast 10.42.0.255
+```
+
 ## Repository layout
 
 - `main.py` — camera capture, marker detection, board pose estimation, and
