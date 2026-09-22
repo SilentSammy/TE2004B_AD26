@@ -131,14 +131,15 @@ ip -4 addr show dev wlo1            # confirm the assigned IP and `brd` address
 ```
 
 For example, the lab desktop's hotspot uses SSID `embedded` / password
-`12345678`, and typically assigns itself `10.42.0.1/24` with broadcast
-`10.42.0.255` — but always confirm with the command above, since NetworkManager
-can pick a different subnet.
+`12345678`. Its subnet is **not** guaranteed to be NetworkManager's usual
+`10.42.0.0/24` default — this one has been observed assigning `192.168.12.0/24`
+instead, likely from a pre-existing connection profile. Always confirm with
+the command above rather than assuming either subnet.
 
 ### Running
 
 ```bash
-python main.py --broadcast 10.42.0.255
+python main.py --broadcast 192.168.12.255
 ```
 
 ## Repository layout
