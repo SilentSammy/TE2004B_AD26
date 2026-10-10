@@ -19,7 +19,9 @@ class VisionSetup:
     plot_margin_m: float = 0.2
     rotate_180: bool = False
     board_estimator: board_est.BoardEstimator = field(init=False, repr=False)
-    plotter: plotter2d.BoardPlotter2D = field(init=False, repr=False)
+    _plotter: plotter2d.BoardPlotter2D | None = field(
+        init=False, default=None, repr=False
+    )
 
     def __post_init__(self):
         self.board_estimator = board_est.BoardEstimator(
@@ -28,11 +30,17 @@ class VisionSetup:
             D=self.camera.D,
             rotate_180=self.rotate_180,
         )
-        self.plotter = plotter2d.BoardPlotter2D(
-            self.board,
-            self.detector.getDictionary(),
-            margin=self.plot_margin_m,
-        )
+
+    @property
+    def plotter(self):
+        """Create and cache the 2D plotter only when it is first requested."""
+        if self._plotter is None:
+            self._plotter = plotter2d.BoardPlotter2D(
+                self.board,
+                self.detector.getDictionary(),
+                margin=self.plot_margin_m,
+            )
+        return self._plotter
 
 class _LatestWebcam:
     """Capture the next camera frame while the current one is processed."""
@@ -188,18 +196,24 @@ if __name__ == "__main__":
     setup = _MEDIUM_SETUP
     if (input("Generate board? (y/n):")).lower() == "y":
         board = setup.board
-        # Example usage: save board image and PDF
         print(board.get_print_dimensions())  # Print dimensions including margins
-        img = board.generate_image(filepath=board.image_path, width_px=2160*4)
-        board.generate_pdf(img, board.pdf_path)
+        img = board.generate_image(filepath=board.image_path, width_px=2160*6)
+        pdf_path = board.generate_vector_pdf(board.pdf_path)
+        marker_paths = board.generate_marker_images(side_px=1200)
+        print(f"Saved board image: {board.image_path}")
+        print(f"Saved vector board: {pdf_path}")
+        print(f"Saved {len(marker_paths)} Google Drawings marker PNGs in "
+              f"{os.path.dirname(marker_paths[0])}")
     
     if (input("Generate individual markers? (y/n):")).lower() == "y":
         # Draw and save markers for IDs 0 through n-1 in the script's directory
         aruco_dict = setup.detector.getDictionary()
-        script_dir = f"./resources/individual_markers/"
+        script_dir = "./resources/individual_markers/"
+        os.makedirs(script_dir, exist_ok=True)
         for marker_id in range(16):
             # generateImageMarker creates the marker image
-            marker_img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, 120)
+            marker_img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, 1200)
+            marker_img = cv2.cvtColor(marker_img, cv2.COLOR_GRAY2BGR)
             filename = os.path.join(script_dir, f"aruco_{marker_id:02d}.png")
             cv2.imwrite(filename, marker_img)
             print(f"Saved {filename}")

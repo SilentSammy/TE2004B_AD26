@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+from pathlib import Path
 
 def image_to_pdf(img, filepath, physical_width):
     """Convert an image to PDF with exact physical dimensions.
@@ -268,6 +269,92 @@ class GridboardConfig(BoardConfig):
         actual_width = cols * self.marker_length + (cols - 1) * self.marker_separation
         actual_height = rows * self.marker_length + (rows - 1) * self.marker_separation
         return actual_width, actual_height
+
+    def generate_vector_pdf(self, filepath=None):
+        """Draw the board directly into a PDF without creating a huge bitmap.
+
+        Marker modules are PDF rectangles, so they stay sharp at any print
+        size and require very little memory.
+        """
+        from reportlab.lib.units import cm
+        from reportlab.pdfgen import canvas
+
+        filepath = filepath or self.pdf_path
+        output_path = Path(filepath)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        print_width, print_height = self.get_print_dimensions()
+        board_width, board_height = self.get_board_dimensions()
+        margin_x = (print_width - board_width) / 2.0
+        margin_y = (print_height - board_height) / 2.0
+        page_width = print_width * 100 * cm
+        page_height = print_height * 100 * cm
+
+        pdf = canvas.Canvas(str(output_path), pagesize=(page_width, page_height))
+        pdf.setFillColorRGB(1, 1, 1)
+        pdf.rect(0, 0, page_width, page_height, stroke=0, fill=1)
+
+        cols, rows = self.size
+        module_count = self.dictionary.markerSize + 2  # one black border module
+        module_size = self.marker_length / module_count
+        step = self.marker_length + self.marker_separation
+
+        for row in range(rows):
+            for col in range(cols):
+                marker_id = row * cols + col
+                marker = cv2.aruco.generateImageMarker(
+                    self.dictionary, marker_id, module_count, borderBits=1
+                )
+                marker_left = margin_x + col * step
+                marker_top = margin_y + row * step
+                marker_bottom = print_height - marker_top - self.marker_length
+
+                # Start with a solid black marker, then draw its white modules.
+                pdf.setFillColorRGB(0, 0, 0)
+                pdf.rect(
+                    marker_left * 100 * cm,
+                    marker_bottom * 100 * cm,
+                    self.marker_length * 100 * cm,
+                    self.marker_length * 100 * cm,
+                    stroke=0,
+                    fill=1,
+                )
+                pdf.setFillColorRGB(1, 1, 1)
+                for bit_row in range(module_count):
+                    for bit_col in range(module_count):
+                        if marker[bit_row, bit_col] == 255:
+                            x = marker_left + bit_col * module_size
+                            y = marker_bottom + (module_count - bit_row - 1) * module_size
+                            pdf.rect(
+                                x * 100 * cm,
+                                y * 100 * cm,
+                                module_size * 100 * cm,
+                                module_size * 100 * cm,
+                                stroke=0,
+                                fill=1,
+                            )
+
+        pdf.showPage()
+        pdf.save()
+        return str(output_path)
+
+    def generate_marker_images(self, directory=None, side_px=1200):
+        """Save one high resolution PNG per marker for raster-only editors."""
+        output_dir = Path(directory or f"{self.filename}_markers")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for marker_id in self.board_marker_ids:
+            marker = cv2.aruco.generateImageMarker(
+                self.dictionary, marker_id, side_px, borderBits=1
+            )
+            # Use ordinary three-channel RGB-compatible PNGs. Some web image
+            # importers are unreliable with OpenCV's grayscale PNG encoding.
+            marker = cv2.cvtColor(marker, cv2.COLOR_GRAY2BGR)
+            path = output_dir / f"aruco_{marker_id:02d}.png"
+            if not cv2.imwrite(str(path), marker):
+                raise OSError(f"Could not write {path}")
+            paths.append(str(path))
+        return paths
     
     def detect_corners(self, frame, drawing_frame=None):
         """Detect markers in a frame and return corners and IDs.

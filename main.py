@@ -70,7 +70,6 @@ def main():
             telemetry_markers = []
 
             for marker_id, image_corners, is_tracked in tracked_markers:
-                label = f"ID {marker_id}"
                 if board_result is not None:
                     _, pnp = board_result
                     board_corners = np.array([
@@ -81,18 +80,36 @@ def main():
                     ])
                     markers.append((marker_id, board_corners, False))
                     x, y = board_corners.mean(axis=0)
+                    # Heading is the outward normal of the marker's top edge.
+                    # The reported frame is Cartesian: +X is 0 degrees, +Y is
+                    # 90 degrees, and positive rotation is counterclockwise.
                     forward = (board_corners[0] + board_corners[1]) / 2 - (x, y)
                     angle = np.degrees(np.arctan2(-forward[1], forward[0]))
-                    label += f" ({x:.2f}, {-y:.2f}) m"
-                    positions.append(f"{label} {angle:.0f} deg")
+                    positions.append(
+                        f"ID {marker_id} ({x:.2f}, {-y:.2f}) m {angle:.0f} deg"
+                    )
                     telemetry_markers.append(
                         {"id": marker_id, "x": round(x, 3), "y": round(-y, 3), "angle": round(angle, 0)}
                     )
 
                 color = (0, 255, 255) if is_tracked else (0, 255, 0)
                 cv2.polylines(frame, [image_corners.astype(np.int32)], True, color, 2)
-                cv2.putText(frame, label, tuple(image_corners.mean(axis=0).astype(int)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                marker_text = str(marker_id)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.6
+                thickness = 2
+                (text_width, text_height), baseline = cv2.getTextSize(
+                    marker_text, font, font_scale, thickness
+                )
+                center_x, center_y = image_corners.mean(axis=0).astype(int)
+                text_at = (
+                    center_x - text_width // 2,
+                    center_y + (text_height - baseline) // 2,
+                )
+                cv2.putText(
+                    frame, marker_text, text_at, font, font_scale,
+                    color, thickness, cv2.LINE_AA,
+                )
 
             vision_done = time.monotonic()
             cv2.imshow("Camera", frame)

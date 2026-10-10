@@ -142,6 +142,28 @@ the command above rather than assuming either subnet.
 python main.py --broadcast 192.168.12.255
 ```
 
+### Updating the lab desktop
+
+After the desired changes have been committed and pushed to `main`, run:
+
+```bash
+cd ~/Desktop/TE2004B_AD26
+bash update_lab_repo.sh
+```
+
+The script fetches `origin/main`, discards local tracked changes, and removes
+untracked files so the checkout matches the published branch. Git-ignored
+files and directories, including `.venv`, are preserved.
+
+If the lab checkout predates the update script, bootstrap it once with:
+
+```bash
+cd ~/Desktop/TE2004B_AD26
+git fetch origin main
+git checkout -f -B main origin/main
+git clean -fd
+```
+
 ## Repository layout
 
 - `main.py` — camera capture, marker detection, board pose estimation, and
