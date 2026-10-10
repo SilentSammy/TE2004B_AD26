@@ -181,7 +181,7 @@ _EXTRA_LARGE_SETUP = VisionSetup(
     marker_height_m=0.12,
 )
 
-VISION = _MID_SETUP
+VISION = _MEDIUM_SETUP
 
 
 if __name__ == "__main__":
