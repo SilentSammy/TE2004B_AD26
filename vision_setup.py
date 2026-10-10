@@ -113,6 +113,15 @@ _gridboard_90 = board_config.GridboardConfig(
     filename="resources/gridboard_90"
 )
 
+_gridboard_160 = board_config.GridboardConfig(
+    dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50),
+    size=(3, 5),
+    marker_length=0.1,
+    board_width=1.5,
+    print_width=1.6,
+    filename="resources/gridboard_160"
+)
+
 _gridboard_200 = board_config.GridboardConfig(
     dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50),
     size=(3, 4),
@@ -150,6 +159,14 @@ _MID_SETUP = VisionSetup(
     marker_height_m=0.12,
 )
 
+_MEDIUM_SETUP = VisionSetup(
+    camera=_webcam,
+    board=_gridboard_160,
+    detector=_aruco_detector4,
+    marker_height_m=0.12,
+)
+
+
 _LARGE_SETUP = VisionSetup(
     camera=_webcam,
     board=_gridboard_200,
@@ -168,7 +185,7 @@ VISION = _MID_SETUP
 
 
 if __name__ == "__main__":
-    setup = _LARGE_SETUP
+    setup = _MEDIUM_SETUP
     if (input("Generate board? (y/n):")).lower() == "y":
         board = setup.board
         # Example usage: save board image and PDF
