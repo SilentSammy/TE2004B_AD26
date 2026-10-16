@@ -28,7 +28,9 @@ python main.py --setup setup_160cm --broadcast 192.168.12.255
 ```
 
 On Linux, `bash run.sh` activates `.venv`, prompts for a setup with its print
-width and height in centimeters, and detects the telemetry broadcast address.
+width and height in centimeters, and uses the telemetry broadcast address verified by `configure_lab_network.sh`.
+The hotspot check runs first, before activating the virtual environment or
+showing the setup prompt. If it fails, the launcher stops.
 Press Enter to use `DEFAULT_SETUP` from `vision_setup.py`. Supply `--setup`
 to skip the prompt:
 
@@ -42,7 +44,7 @@ Available setups and their board resources:
 | Setup | Board resources |
 | --- | --- |
 | `setup_letter` | `resources/board_letter.png` and `.pdf` |
-| `setup_90cm` | `resources/board_90cm.png` and `.pdf` (when generated) |
+| `setup_90cm` | `resources/board_90cm.png` and `.pdf` |
 | `setup_160cm` | `resources/board_160cm.png` and `.pdf` |
 
 `DEFAULT_SETUP` in `vision_setup.py` selects the default setup object.
@@ -53,11 +55,12 @@ This opens two windows:
 - **Camera**: the raw feed with detected markers outlined and labeled.
 - **Board**: a top-down plot of marker positions on the board.
 
-Per-second diagnostics (FPS, timing breakdown, detected marker positions) are
+Per-second diagnostics (FPS, detected marker positions) are
 printed to the console. Press `q` or `Esc` in a window to quit.
 
 Each `VisionSetup` has a `marker_config_path` pointing to its appearance and
-height JSON. Every setup explicitly declares this required field; all currently
+height JSON. This optional field defaults to `None`, which uses default marker
+appearance and height without reading a file. All current setups explicitly
 point to `marker_config.json` beside `main.py`. To assign a different file, change
 `marker_config_path` in its `VisionSetup(...)` definition. Keys in the JSON are
 ArUco IDs written as strings:
@@ -205,11 +208,60 @@ nmcli device wifi hotspot ifname wlo1 ssid embedded band bg password 12345678
 ip -4 addr show dev wlo1            # confirm the assigned IP and `brd` address
 ```
 
-For example, the lab desktop's hotspot uses SSID `embedded` / password
-`12345678`. Its subnet is **not** guaranteed to be NetworkManager's usual
-`10.42.0.0/24` default — this one has been observed assigning `192.168.12.0/24`
-instead, likely from a pre-existing connection profile. Always confirm with
-the command above rather than assuming either subnet.
+The lab desktop uses a different arrangement: `create_ap.service` manages
+SSID `embedded` on the built-in Wi-Fi adapter `wlp1s0`, using virtual interface
+`ap0` at `192.168.12.1/24`. A separate USB Wi-Fi adapter connects to `Tec`.
+Its hotspot settings are in `/etc/create_ap.conf`; NetworkManager's saved
+`embedded` profile is a client connection, not this hotspot.
+
+To check and restore the lab network, run:
+
+```bash
+bash configure_lab_network.sh
+```
+
+`run.sh` calls this script automatically before starting vision. Running it
+manually first is optional; either route verifies the same network.
+
+The script performs one check/repair pass. When run manually in a terminal,
+it pauses with `Press Enter to close...` on success or failure. Use
+`--no-pause` for human-readable output without that pause.
+
+Other scripts should use `--json`, which never pauses and returns a single
+JSON object on stdout. Progress and command output go to stderr. Exit status
+is `0` for success and nonzero for failure. For example, a caller can use:
+
+```bash
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if network_info=$(bash "$SCRIPT_DIR/configure_lab_network.sh" --json); then
+  broadcast=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["broadcast"])' "$network_info")
+  hotspot_ip=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["hotspot_ip"])' "$network_info")
+else
+  printf 'Network setup failed: %s\n' "$network_info" >&2
+  exit 1
+fi
+```
+
+The result contains `success`, `error`, `hotspot_interface`, `hotspot_ip`,
+`hotspot_cidr`, `broadcast`, and `hotspot_ssid`.
+Unavailable values are `null`. Failures also return JSON with `success: false`
+and an error message. Without a terminal on stdin, privileged repairs use
+noninteractive sudo and fail promptly if authentication is required.
+
+This standalone script reads the hotspot adapter, SSID and gateway from the
+existing `create_ap` configuration. It ensures `create_ap.service` is enabled
+and running, and waits for the hotspot on the configured Wi-Fi radio to
+advertise the expected SSID and gateway. An unhealthy hotspot gets one restart.
+It reports the AP interface and telemetry broadcast address and returns a
+nonzero exit status if hotspot setup fails.
+
+Choose the desktop's internet connection normally in Ubuntu's network GUI.
+The script does not select or reconnect `Tec`, or require an internet connection;
+local vision and telemetry only require the hotspot. Internet sharing to hotspot
+clients still follows the uplink settings in `/etc/create_ap.conf`.
+
+A healthy hotspot is left running without restart. Repairs may request your
+Ubuntu sudo password. Configure `/etc/create_ap.conf` on the desktop first.
 
 ### Running
 

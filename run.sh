@@ -1,6 +1,28 @@
 #!/bin/bash
-# Activates the venv and runs main.py. Usage: ./run.sh [extra args passed to main.py]
+# Configures the lab network, activates the venv, and runs main.py.
+# Usage: ./run.sh [extra args passed to main.py]
 cd "$(dirname "$0")" || exit 1
+
+if ! NETWORK_INFO=$(bash ./configure_lab_network.sh --json); then
+  echo "Lab network configuration failed; vision will not start." >&2
+  exit 1
+fi
+BROADCAST=$(python3 - "$NETWORK_INFO" <<'PY'
+import ipaddress
+import json
+import sys
+
+try:
+    result = json.loads(sys.argv[1])
+    if result.get("success") is not True:
+        raise ValueError(result.get("error") or "network is not ready")
+    print(ipaddress.IPv4Address(result["broadcast"]))
+except (ValueError, KeyError, TypeError, AttributeError) as error:
+    print(f"Invalid network configuration result: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+) || exit 1
+
 source .venv/bin/activate || exit 1
 
 # An explicit setup (or a help request) skips the interactive menu.
@@ -43,7 +65,7 @@ PY
     exit 1
   fi
   while true; do
-    read -r -p "Setup [$DEFAULT_CHOICE]: " choice || choice=$DEFAULT_CHOICE
+    read -r -p "Choose a setup (press Enter for default): " choice || choice=$DEFAULT_CHOICE
     choice=${choice:-$DEFAULT_CHOICE}
     # Compare as strings to avoid interpreting user input as shell arithmetic.
     SELECTED_SETUP=
@@ -60,27 +82,5 @@ PY
   set -- --setup "$SELECTED_SETUP" "$@"
 fi
 
-# Prefer an interface actively running as a Wi-Fi access point (e.g. a
-# hotspot hosted on this machine), since that's the network devices like
-# the Pico W actually join. NetworkManager creates a separate virtual
-# interface (commonly ap0) for this when the radio is also a client
-# elsewhere, so the "first interface with an IP" heuristic can pick the
-# wrong one on a machine connected to two networks at once.
-AP_IFACE=$(iw dev 2>/dev/null | awk '/Interface/{iface=$2} /type AP/{print iface; exit}')
-if [ -n "$AP_IFACE" ]; then
-  BROADCAST=$(ip -4 -o addr show dev "$AP_IFACE" | awk '/brd/ { for (i = 1; i <= NF; i++) if ($i == "brd") print $(i + 1) }')
-fi
-
-# Fall back to the first non-loopback interface with a broadcast address,
-# for machines that are only a client (not hosting a hotspot themselves).
-if [ -z "$BROADCAST" ]; then
-  BROADCAST=$(ip -4 -o addr show | awk '$2 != "lo" && /brd/ { for (i = 1; i <= NF; i++) if ($i == "brd") print $(i + 1) }' | head -n1)
-fi
-
-if [ -z "$BROADCAST" ]; then
-  echo "Could not auto-detect a broadcast address; pass one manually, e.g. ./run.sh --broadcast 192.168.1.255" >&2
-  python main.py "$@"
-else
-  echo "Using broadcast address: $BROADCAST"
-  python main.py --broadcast "$BROADCAST" "$@"
-fi
+echo "Using broadcast address: $BROADCAST"
+python main.py --broadcast "$BROADCAST" "$@"

@@ -17,7 +17,7 @@ class VisionSetup:
     board: board_config.BoardConfig
     detector: cv2.aruco.ArucoDetector
     marker_height_m: float
-    marker_config_path: Path | str
+    marker_config_path: Path | str | None = None
     plot_margin_m: float = 0.2
     rotate_180: bool = False
     board_estimator: board_est.BoardEstimator = field(init=False, repr=False)

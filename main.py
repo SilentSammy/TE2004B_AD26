@@ -17,6 +17,8 @@ DEFAULT_TELEMETRY_PORT = 5000
 def load_marker_config(path):
     """Return validated appearance and height overrides; errors use defaults."""
     appearances, heights = {}, {}
+    if path is None:
+        return appearances, heights
     try:
         path = Path(path).resolve()
         with path.open(encoding="utf-8-sig") as file:
@@ -229,9 +231,6 @@ def main():
             if plot_done - stats_at >= 1.0:
                 print(
                     f"{frames / (plot_done - stats_at):.1f} FPS | "
-                    f"read {read_time / frames * 1000:.1f} ms | "
-                    f"detect {vision_time / frames * 1000:.1f} ms | "
-                    f"display {plot_time / frames * 1000:.1f} ms | "
                     f"board {'yes' if board_result else 'no'} | "
                     f"{', '.join(positions) or 'no markers'}",
                     flush=True,
