@@ -535,11 +535,11 @@ class BoardPlotter3D:
 
 # if __name__ == "__main__":
 #     import cv2
-#     from board_config import gridboard_letter, gridboard_letter
+#     from vision_setup import board_letter
 #     from cam_config import global_cam, webcam
     
 #     # board_config = global_board_config
-#     board_config = gridboard_letter
+#     board_config = board_letter
 #     active_cam = webcam
 
 #     be = BoardEstimator(

@@ -1,19 +1,107 @@
 import argparse
 import json
+import math
 import socket
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 from marker_tracker import MarkerTracker
-from vision_setup import VISION
+from vision_setup import DEFAULT_SETUP, VISION_SETUPS
 
 DEFAULT_TELEMETRY_PORT = 5000
 
 
+def load_marker_config(path):
+    """Return validated appearance and height overrides; errors use defaults."""
+    appearances, heights = {}, {}
+    try:
+        path = Path(path).resolve()
+        with path.open(encoding="utf-8-sig") as file:
+            entries = json.load(file)
+        if not isinstance(entries, dict):
+            raise ValueError("expected an object keyed by marker ID")
+    except (OSError, UnicodeError, ValueError, RuntimeError, RecursionError) as error:
+        print(f"Marker config unavailable; using defaults: {error}")
+        return appearances, heights
+
+    def number(value, minimum, inclusive=True):
+        if type(value) not in (int, float):
+            return False
+        try:
+            return math.isfinite(value) and (value >= minimum if inclusive else value > minimum)
+        except OverflowError:
+            return False
+
+    for key, entry in entries.items():
+        try:
+            marker_id = int(key)
+            if marker_id < 0 or not isinstance(entry, dict):
+                raise ValueError("expected a nonnegative ID and an object")
+        except (TypeError, ValueError):
+            print(f"Ignoring invalid marker config entry: {key!r}")
+            continue
+
+        def ignored(field):
+            print(f"Marker {marker_id}: invalid {field}; using its default")
+
+        if "height_m" in entry:
+            if number(entry["height_m"], 0):
+                heights[marker_id] = entry["height_m"]
+            else:
+                ignored("height_m")
+        style = {}
+        if "text" in entry:
+            text = entry["text"]
+            if isinstance(text, str) and all(c == "\n" or " " <= c <= "~" for c in text):
+                style["text"] = text
+            else:
+                ignored("text")
+        if "color" in entry:
+            color = entry["color"]
+            if (isinstance(color, list) and len(color) == 3
+                    and all(type(c) is int and 0 <= c <= 255 for c in color)):
+                style["color"] = tuple(color)
+            else:
+                ignored("color")
+        if "image" in entry:
+            try:
+                if not isinstance(entry["image"], str) or not entry["image"]:
+                    raise ValueError("expected an image path")
+                image_path = Path(entry["image"])
+                if not image_path.is_absolute():
+                    image_path = path.parent / image_path
+                # Load now so a broken image cannot interrupt the tracking loop.
+                image = cv2.imdecode(np.fromfile(image_path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+                if (image is None or image.dtype not in (np.uint8, np.uint16)
+                        or not (image.ndim == 2 or image.ndim == 3 and image.shape[2] in (3, 4))):
+                    raise ValueError("unsupported image")
+                style["image"] = image
+            except (OSError, ValueError, cv2.error) as error:
+                print(f"Marker {marker_id}: cannot load image; using label defaults: {error}")
+        if "scale" in entry:
+            if number(entry["scale"], 0, inclusive=False):
+                style["scale"] = entry["scale"]
+            else:
+                ignored("scale")
+        if style:
+            appearances[marker_id] = style
+    return appearances, heights
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--marker-config", type=Path,
+        help="override the selected vision setup's marker config JSON",
+    )
+    parser.add_argument(
+        "--setup",
+        choices=VISION_SETUPS,
+        help="vision setup (uses DEFAULT_SETUP from vision_setup.py if omitted)",
+    )
     parser.add_argument(
         "--broadcast",
         default=None,
@@ -32,15 +120,22 @@ def main():
         help="telemetry send rate in Hz (default: 10)",
     )
     args = parser.parse_args()
+    setup = VISION_SETUPS[args.setup] if args.setup is not None else DEFAULT_SETUP
 
     if args.broadcast is None:
         print("No --broadcast address given; telemetry will not be sent.")
     telemetry_interval = 1 / args.rate if args.rate > 0 else float("inf")
 
-    camera = VISION.camera
-    estimator = VISION.board_estimator
-    detector = VISION.detector
-    plotter = VISION.plotter
+    camera = setup.camera
+    estimator = setup.board_estimator
+    detector = setup.detector
+    plotter = setup.plotter
+    config_path = args.marker_config if args.marker_config is not None else setup.marker_config_path
+    appearances, marker_heights = load_marker_config(config_path)
+    plotter.marker_overrides = {
+        marker_id: {**plotter.marker_overrides.get(marker_id, {}), **style}
+        for marker_id, style in (plotter.marker_overrides | appearances).items()
+    }
     tracker = MarkerTracker()
 
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -72,9 +167,10 @@ def main():
             for marker_id, image_corners, is_tracked in tracked_markers:
                 if board_result is not None:
                     _, pnp = board_result
+                    marker_height = marker_heights.get(marker_id, setup.marker_height_m)
                     board_corners = np.array([
                         estimator.project_point_to_board(
-                            pnp, point, frame.shape, VISION.marker_height_m
+                            pnp, point, frame.shape, marker_height
                         )
                         for point in image_corners
                     ])

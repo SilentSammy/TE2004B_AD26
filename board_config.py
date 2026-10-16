@@ -377,15 +377,15 @@ class GridboardConfig(BoardConfig):
 # TODO: Add CharucoBoardConfig similarly if needed
 
 if __name__ == "__main__":
-    gridboard_letter = GridboardConfig(
+    board_letter = GridboardConfig(
         dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50),
         size=(3, 4),
         marker_length=0.025,
         board_width=0.15,      # board content width (fits Letter height)
         print_width=0.2159,    # Letter width is 8.5" = 21.59cm
-        filename="resources/gridboard_letter"
+        filename="resources/board_letter"
     )
     # Example usage: save board image and PDF
-    img = gridboard_letter.generate_image(filepath=gridboard_letter.image_path, width_px=2160*4)
-    gridboard_letter.generate_pdf(img, gridboard_letter.pdf_path)
-    print(gridboard_letter.get_print_dimensions())  # Print dimensions including margins
+    img = board_letter.generate_image(filepath=board_letter.image_path, width_px=2160*4)
+    board_letter.generate_pdf(img, board_letter.pdf_path)
+    print(board_letter.get_print_dimensions())  # Print dimensions including margins

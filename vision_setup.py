@@ -8,6 +8,7 @@ import board_config
 import board_est
 import plotter2d
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass(kw_only=True)
@@ -16,6 +17,7 @@ class VisionSetup:
     board: board_config.BoardConfig
     detector: cv2.aruco.ArucoDetector
     marker_height_m: float
+    marker_config_path: Path | str
     plot_margin_m: float = 0.2
     rotate_180: bool = False
     board_estimator: board_est.BoardEstimator = field(init=False, repr=False)
@@ -103,49 +105,31 @@ _webcam = cam_config.Camera(
     frame_getter=_get_webcam_image,
 )
 
-_gridboard_letter = board_config.GridboardConfig(
+board_letter = board_config.GridboardConfig(
     dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50),
     size=(3, 4),
     marker_length=0.025,
     board_width=0.15,      # board content width (fits Letter height)
     print_width=0.2159,    # Letter width is 8.5" = 21.59cm
-    filename="resources/gridboard_letter"
+    filename="resources/board_letter"
 )
 
-_gridboard_90 = board_config.GridboardConfig(
+board_90cm = board_config.GridboardConfig(
     dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50),
     size=(3, 4),
     marker_length=0.1,
     board_width=0.84,
     print_width=0.9,
-    filename="resources/gridboard_90"
+    filename="resources/board_90cm"
 )
 
-_gridboard_160 = board_config.GridboardConfig(
+board_160cm = board_config.GridboardConfig(
     dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50),
     size=(3, 5),
     marker_length=0.1,
     board_width=1.5,
     print_width=1.6,
-    filename="resources/gridboard_160"
-)
-
-_gridboard_200 = board_config.GridboardConfig(
-    dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50),
-    size=(3, 4),
-    marker_length=0.15,
-    board_width=1.9,      # board content width
-    print_width=2.0,      # print width
-    filename="resources/gridboard_200"
-)
-
-_gridboard_240 = board_config.GridboardConfig(
-    dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50),
-    size=(5, 7),
-    marker_length=0.24,
-    board_width=2.28,      # board content width
-    print_width=2.4,      # print width
-    filename="resources/gridboard_240"
+    filename="resources/board_160cm"
 )
 
 
@@ -153,47 +137,35 @@ _aruco_detector4 = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2
 _aruco_detector5 = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50))
 _aruco_detector6 = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50))
 
-_SMALL_SETUP = VisionSetup(
-    camera=_webcam,
-    board=_gridboard_letter,
-    detector=_aruco_detector4,
-    marker_height_m=0.12,
-)
+VISION_SETUPS = {
+    "setup_letter": VisionSetup(
+        camera=_webcam,
+        board=board_letter,
+        detector=_aruco_detector4,
+        marker_height_m=0.12,
+        marker_config_path=Path(__file__).with_name("marker_config.json"),
+    ),
+    "setup_90cm": VisionSetup(
+        camera=_webcam,
+        board=board_90cm,
+        detector=_aruco_detector4,
+        marker_height_m=0.12,
+        marker_config_path=Path(__file__).with_name("marker_config.json"),
+    ),
+    "setup_160cm": VisionSetup(
+        camera=_webcam,
+        board=board_160cm,
+        detector=_aruco_detector4,
+        marker_height_m=0.12,
+        marker_config_path=Path(__file__).with_name("marker_config.json"),
+    ),
+}
 
-_MID_SETUP = VisionSetup(
-    camera=_webcam,
-    board=_gridboard_90,
-    detector=_aruco_detector4,
-    marker_height_m=0.12,
-)
-
-_MEDIUM_SETUP = VisionSetup(
-    camera=_webcam,
-    board=_gridboard_160,
-    detector=_aruco_detector4,
-    marker_height_m=0.12,
-)
-
-
-_LARGE_SETUP = VisionSetup(
-    camera=_webcam,
-    board=_gridboard_200,
-    detector=_aruco_detector4,
-    marker_height_m=0.12,
-)
-
-_EXTRA_LARGE_SETUP = VisionSetup(
-    camera=_webcam,
-    board=_gridboard_240,
-    detector=_aruco_detector4,
-    marker_height_m=0.12,
-)
-
-VISION = _MEDIUM_SETUP
+DEFAULT_SETUP = VISION_SETUPS["setup_90cm"]
 
 
 if __name__ == "__main__":
-    setup = _MEDIUM_SETUP
+    setup = DEFAULT_SETUP
     if (input("Generate board? (y/n):")).lower() == "y":
         board = setup.board
         print(board.get_print_dimensions())  # Print dimensions including margins
@@ -210,7 +182,7 @@ if __name__ == "__main__":
         aruco_dict = setup.detector.getDictionary()
         script_dir = "./resources/individual_markers/"
         os.makedirs(script_dir, exist_ok=True)
-        for marker_id in range(16):
+        for marker_id in range(20):
             # generateImageMarker creates the marker image
             marker_img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, 1200)
             marker_img = cv2.cvtColor(marker_img, cv2.COLOR_GRAY2BGR)
