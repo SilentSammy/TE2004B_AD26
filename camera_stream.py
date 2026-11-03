@@ -408,8 +408,7 @@ def run_vision(argv=None):
                         raise CameraStreamError("Camera service did not become ready (possibly stalled)")
                     time.sleep(0.05)
             if info.get("http"):
-                print(f"Camera viewer: http://localhost:{info['http']['port']}/ "
-                      "(replace localhost with this computer's LAN/Tailscale IP remotely)", flush=True)
+                print(f"Camera viewer: http://localhost:{info['http']['port']}/", flush=True)
             mode = "stream"
         elif args.synthetic_camera:
             parser.error("--synthetic-camera requires a local camera service")
