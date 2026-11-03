@@ -20,7 +20,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Choose a vision setup with `--setup` (default: `setup_160cm`):
+Choose a vision setup with `--setup` (the default is `DEFAULT_SETUP` in `vision_setup.py`):
 
 ```bash
 python main.py --setup setup_90cm
@@ -57,6 +57,77 @@ This opens two windows:
 
 Per-second diagnostics (FPS, detected marker positions) are
 printed to the console. Press `q` or `Esc` in a window to quit.
+
+## Camera capture and viewing
+
+`camera_stream.py` is the streaming entry point. Camera reading and source
+selection live in `cam_config.py`; named configurations live in `vision_setup.py`.
+`frame_stream.py` is an internal helper for sharing the latest raw frame between
+processes. The streamer never runs marker detection itself.
+
+`bash run.sh` starts one camera service, waits for it to become ready, and starts
+`main.py` using raw local shared frames. Original frames are published before
+detection annotations. Readers get private copies and skip old frames instead
+of creating a backlog.
+
+Open `http://HOST:8080/` in a browser, replacing `HOST` with the desktop's LAN or
+Tailscale IP. Other endpoints are `/camera.mjpg` (MJPEG), `/snapshot.jpg` (a fresh
+JPEG), and `/health` (JSON status). The server listens on all interfaces by
+default; network/firewall access rules still apply. This HTTP endpoint itself
+does not add authentication.
+
+The viewer encoder runs in a separate, lower-priority process and only works
+when images are requested. It encodes once for all viewers, with at most eight
+concurrent image clients. Defaults are **10 FPS**, **640 px maximum width**,
+and JPEG quality **80**. Viewer resizing and compression do not affect raw
+detection frames or calibration. Configure viewing through the launcher:
+
+```bash
+bash run.sh --stream-port 8080 --stream-fps 10 --stream-width 640 --stream-quality 80
+```
+
+The launcher cleans up the service it started when vision exits or the launcher
+is interrupted. Streaming and detection share one terminal; press **Ctrl+C**
+to stop both. A healthy pre-existing service is reused and left running.
+
+Running `python main.py` alone uses `--camera-source auto`: attach to a running
+local service, otherwise capture directly. Direct capture holds the same
+ownership lock. An active but stalled/mismatched service raises an error instead
+of competing for the camera. Source selection happens at startup; restart after
+service failure.
+
+```bash
+python main.py --camera-source direct       # direct capture, no viewer service
+python main.py --camera-source stream       # require an existing service
+python camera_stream.py                     # stream DEFAULT_SETUP's camera
+python camera_stream.py --setup setup_160cm  # stream a selected setup's camera
+python camera_stream.py --run-vision         # streaming + main.py, without hotspot setup
+```
+
+Shared frames use a per-user memory-backed directory on Linux, discovered
+consistently from GUI and SSH sessions. All components accept `--stream-dir PATH`
+for separate instances/tests. Capture size and rotation must match the selected
+setup's calibration; the service preserves the camera's default capture size.
+
+For SSH/CI use `--headless`; `--max-frames N` provides a bounded test run. This
+example uses generated ArUco frames and does not open camera hardware:
+
+```bash
+python camera_stream.py --run-vision --synthetic-camera --stream-port 0 --headless --max-frames 60
+```
+
+Pose packets add `frame_sequence` and `frame_age_ms` (capture-return to pose
+generation, measured on the desktop). The default pose publication rate stays
+10 Hz; use `--rate 30` if needed.
+
+Tests: `python -m unittest discover -s tests -p test_camera_pipeline.py -v`.
+Measure the implemented transport using generated frames with:
+
+```bash
+python benchmarks/camera_service_latency.py --output benchmarks/results/service.json
+```
+
+## Marker configuration
 
 Each `VisionSetup` has a `marker_config_path` pointing to its appearance and
 height JSON. This optional field defaults to `None`, which uses default marker
@@ -269,23 +340,29 @@ Ubuntu sudo password. Configure `/etc/create_ap.conf` on the desktop first.
 python main.py --broadcast 192.168.12.255
 ```
 
-### Updating the lab desktop
+### Updating any computer
 
-After the desired changes have been committed and pushed to `main`, run:
+After committing and pushing changes to `main` from either computer, run this
+in the other checkout (Ubuntu terminal or Git Bash on Windows):
 
 ```bash
-cd ~/Desktop/TE2004B_AD26
-bash update_lab_repo.sh
+cd /path/to/TE2004B_AD26
+bash update_repo.sh
 ```
 
 The script fetches `origin/main`, discards local tracked changes, and removes
 untracked files so the checkout matches the published branch. Git-ignored
 files and directories, including `.venv`, are preserved.
 
-If the lab checkout predates the update script, bootstrap it once with:
+It uses the checkout containing the script, regardless of your current directory.
+Optionally pass another checkout: `bash update_repo.sh /path/to/checkout`.
+It only updates files; restart running programs yourself to load the changes.
+
+If a checkout predates the update script or still has its old name
+(`update_lab_repo.sh`), bootstrap it once with:
 
 ```bash
-cd ~/Desktop/TE2004B_AD26
+cd /path/to/TE2004B_AD26
 git fetch origin main
 git checkout -f -B main origin/main
 git clean -fd

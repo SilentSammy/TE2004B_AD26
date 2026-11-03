@@ -1,5 +1,5 @@
 #!/bin/bash
-# Configures the lab network, activates the venv, and runs main.py.
+# Configures the network and launches camera capture, viewing, and vision.
 # Usage: ./run.sh [extra args passed to main.py]
 cd "$(dirname "$0")" || exit 1
 
@@ -83,4 +83,7 @@ PY
 fi
 
 echo "Using broadcast address: $BROADCAST"
-python main.py --broadcast "$BROADCAST" "$@"
+echo "Starting camera streaming and vision. Press Ctrl+C to stop both."
+# Replace Bash with the supervisor so terminal signals reach it directly.
+# Both child processes inherit this terminal; the supervisor owns their cleanup.
+exec python -u -B camera_stream.py --run-vision --broadcast "$BROADCAST" "$@"

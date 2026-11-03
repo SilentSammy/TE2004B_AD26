@@ -11,6 +11,7 @@ venv/
 .env
 .env.*
 /REMOTE_ACCESS.md
+/benchmarks/results/
 
 # Editor and OS files
 .idea/

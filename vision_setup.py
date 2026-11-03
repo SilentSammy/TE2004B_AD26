@@ -1,5 +1,4 @@
 import os
-import threading
 
 import numpy as np
 import cv2
@@ -9,6 +8,7 @@ import board_est
 import plotter2d
 from dataclasses import dataclass, field
 from pathlib import Path
+from cam_config import LatestCamera
 
 
 @dataclass(kw_only=True)
@@ -44,57 +44,10 @@ class VisionSetup:
             )
         return self._plotter
 
-class _LatestWebcam:
-    """Capture the next camera frame while the current one is processed."""
-
-    def __init__(self):
-        self.cap = cv2.VideoCapture(1)
-        if not self.cap.isOpened():
-            self.cap = cv2.VideoCapture(0)
-        self.condition = threading.Condition()
-        self.frame = None
-        self.sequence = 0
-        self.delivered_sequence = 0
-        self.closed = False
-        self.thread = threading.Thread(target=self._capture, daemon=True)
-        self.thread.start()
-
-    def _capture(self):
-        while not self.closed:
-            success, frame = self.cap.read()
-            if not success:
-                break
-            with self.condition:
-                self.frame = frame
-                self.sequence += 1
-                self.condition.notify_all()
-        with self.condition:
-            self.closed = True
-            self.condition.notify_all()
-
-    def read(self):
-        with self.condition:
-            self.condition.wait_for(
-                lambda: self.sequence != self.delivered_sequence or self.closed,
-                timeout=1.0,
-            )
-            if self.sequence == self.delivered_sequence:
-                return None
-            self.delivered_sequence = self.sequence
-            return self.frame
-
-    def release(self):
-        self.closed = True
-        self.cap.release()
-        with self.condition:
-            self.condition.notify_all()
-        self.thread.join(timeout=1.0)
-
-
 def _get_webcam_image():
     source = getattr(_get_webcam_image, "source", None)
     if source is None:
-        source = _LatestWebcam()
+        source = LatestCamera()
         _get_webcam_image.source = source
         _get_webcam_image.cap = source.cap
     return source.read()
@@ -103,6 +56,7 @@ _webcam = cam_config.Camera(
     K=np.array([[735.09668766, 0., 308.18011975], [0., 735.62248422, 242.58646203], [0., 0., 1.]], dtype=np.float32),
     D=np.array([0.15017654, -1.34648531, 0.00405315, -0.00410719, 2.41472656], dtype=np.float32),
     frame_getter=_get_webcam_image,
+    device_candidates=(1, 0),
 )
 
 board_letter = board_config.GridboardConfig(

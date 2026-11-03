@@ -9,6 +9,8 @@ import cv2
 import numpy as np
 
 from marker_tracker import MarkerTracker
+from cam_config import camera_for_setup
+from frame_stream import CameraStreamError, default_stream_dir
 from vision_setup import DEFAULT_SETUP, VISION_SETUPS
 
 DEFAULT_TELEMETRY_PORT = 5000
@@ -93,8 +95,14 @@ def load_marker_config(path):
     return appearances, heights
 
 
-def main():
+def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--camera-source", choices=("auto", "direct", "stream"), default="auto",
+                        help="prefer the local service, capture directly, or require the service")
+    parser.add_argument("--stream-dir", type=Path, default=default_stream_dir(),
+                        help="local camera service runtime directory")
+    parser.add_argument("--headless", action="store_true", help="run without camera/board windows")
+    parser.add_argument("--max-frames", type=int, help="stop after this many processed frames (testing)")
     parser.add_argument(
         "--marker-config", type=Path,
         help="override the selected vision setup's marker config JSON",
@@ -121,36 +129,51 @@ def main():
         default=10.0,
         help="telemetry send rate in Hz (default: 10)",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv=None):
+    parser = argument_parser()
+    args = parser.parse_args(argv)
+    if args.max_frames is not None and args.max_frames < 1:
+        parser.error("--max-frames must be positive")
     setup = VISION_SETUPS[args.setup] if args.setup is not None else DEFAULT_SETUP
 
     if args.broadcast is None:
         print("No --broadcast address given; telemetry will not be sent.")
     telemetry_interval = 1 / args.rate if args.rate > 0 else float("inf")
 
-    camera = setup.camera
+    try:
+        camera, frame_source = camera_for_setup(setup.camera, args.camera_source, args.stream_dir)
+    except CameraStreamError as error:
+        print(f"Camera unavailable: {error}", flush=True)
+        return 1
+    if frame_source:
+        print(f"Camera source: {frame_source.mode}", flush=True)
     estimator = setup.board_estimator
     detector = setup.detector
-    plotter = setup.plotter
+    plotter = None if args.headless else setup.plotter
     config_path = args.marker_config if args.marker_config is not None else setup.marker_config_path
     appearances, marker_heights = load_marker_config(config_path)
-    plotter.marker_overrides = {
-        marker_id: {**plotter.marker_overrides.get(marker_id, {}), **style}
-        for marker_id, style in (plotter.marker_overrides | appearances).items()
-    }
+    if plotter is not None:
+        plotter.marker_overrides = {
+            marker_id: {**plotter.marker_overrides.get(marker_id, {}), **style}
+            for marker_id, style in (plotter.marker_overrides | appearances).items()
+        }
     tracker = MarkerTracker()
 
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-    cv2.namedWindow("Camera", cv2.WINDOW_NORMAL)
-    cv2.namedWindow("Board", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Board", 400, round(400 * plotter.height / plotter.width))
-
     stats_at = last_plot = last_telemetry = time.monotonic()
     frames = read_time = vision_time = plot_time = 0.0
+    processed_frames = 0
 
     try:
+        if not args.headless:
+            cv2.namedWindow("Camera", cv2.WINDOW_NORMAL)
+            cv2.namedWindow("Board", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("Board", 400, round(400 * plotter.height / plotter.width))
         while True:
             started = time.monotonic()
             success, frame = camera.read()
@@ -210,8 +233,9 @@ def main():
                 )
 
             vision_done = time.monotonic()
-            cv2.imshow("Camera", frame)
-            if vision_done - last_plot >= 0.1:
+            if not args.headless:
+                cv2.imshow("Camera", frame)
+            if plotter is not None and vision_done - last_plot >= 0.1:
                 cv2.imshow("Board", plotter.render(markers))
                 last_plot = vision_done
             if args.broadcast is not None and vision_done - last_telemetry >= telemetry_interval:
@@ -220,6 +244,11 @@ def main():
                     "board_detected": board_result is not None,
                     "markers": telemetry_markers,
                 }
+                if frame_source:
+                    telemetry.update(
+                        frame_sequence=frame_source.sequence,
+                        frame_age_ms=round((time.perf_counter_ns() - frame_source.last_capture_ns) / 1e6, 3),
+                    )
                 udp.sendto(json.dumps(telemetry).encode(), (args.broadcast, args.port))
                 last_telemetry = vision_done
             plot_done = time.monotonic()
@@ -238,13 +267,23 @@ def main():
                 stats_at = plot_done
                 frames = read_time = vision_time = plot_time = 0.0
 
-            if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+            processed_frames += 1
+            if args.max_frames and processed_frames >= args.max_frames:
                 break
+            if not args.headless and cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                break
+    except CameraStreamError as error:
+        print(f"Camera stream lost: {error}. Restart to reconnect or use --camera-source direct.", flush=True)
+        return 1
+    except KeyboardInterrupt:
+        return 130
     finally:
         udp.close()
         camera.release()
-        cv2.destroyAllWindows()
+        if not args.headless:
+            cv2.destroyAllWindows()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

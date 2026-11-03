@@ -1,8 +1,14 @@
+"""Camera configuration, direct capture, and local stream consumption."""
+
+import copy
+from pathlib import Path
+
 import cv2
 import numpy as np
 import threading
-import queue
 import time
+
+from frame_stream import CameraStreamError, FileMutex, SharedFrameReader, default_stream_dir, service_running
 
 def rotate_intrinsics(rotation, K, image_size):
     """Rotate camera intrinsics for rotated image.
@@ -42,7 +48,8 @@ def rotate_intrinsics(rotation, K, image_size):
 class Camera:
     """Camera configuration with intrinsics and frame acquisition."""
     
-    def __init__(self, K, D, frame_getter, rotation=None, image_shape_hw=None):
+    def __init__(self, K, D, frame_getter, rotation=None, image_shape_hw=None,
+                 device_candidates=None):
         """Initialize camera.
         
         Args:
@@ -57,6 +64,7 @@ class Camera:
             raise ValueError("rotation and image_shape_hw must both be provided or both be None")
         
         self.frame_getter = frame_getter
+        self.device_candidates = device_candidates
         self.rotation = rotation
         self.D = D  # Distortion coefficients don't change (radially symmetric)
         self._released = False
@@ -67,6 +75,16 @@ class Camera:
         else:
             self.K = K
     
+    def open_capture(self, width=None, height=None, fps=None):
+        """Open original, unrotated device frames for a streaming publisher.
+
+        Rotation stays with consumers, together with their calibrated intrinsics.
+        The publisher must acquire the camera ownership lock before calling this.
+        """
+        if self.device_candidates is None:
+            raise CameraStreamError("This camera setup does not declare a local capture device")
+        return LatestCamera(self.device_candidates, width, height, fps)
+
     def get_frame(self):
         """Get frame from frame_getter."""
         if self._released:
@@ -96,3 +114,136 @@ class Camera:
             if source is not None and hasattr(source, "release"):
                 source.release()
         self._released = True
+
+
+def device_value(value):
+    return int(value) if str(value).isdigit() else str(value)
+
+
+class LatestCamera:
+    """One capture thread; consumers receive the latest frame, never a FIFO."""
+
+    def __init__(self, devices=(1, 0), width=None, height=None, fps=None):
+        self.cap = None
+        for device in devices:
+            cap = cv2.VideoCapture(device_value(device))
+            if cap.isOpened():
+                self.cap, self.device = cap, str(device)
+                break
+            cap.release()
+        if self.cap is None:
+            raise CameraStreamError(f"Could not open camera; tried {tuple(devices)}")
+        if width is not None:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        if fps is not None:
+            self.cap.set(cv2.CAP_PROP_FPS, fps)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.condition = threading.Condition()
+        self.frame = None
+        self._sequence = 0
+        self.last_sequence = self.last_capture_ns = 0
+        self.closed = False
+        self.thread = threading.Thread(target=self._capture, daemon=True)
+        self.thread.start()
+
+    def _capture(self):
+        try:
+            while not self.closed:
+                success, image = self.cap.read()
+                captured = time.perf_counter_ns()
+                if not success:
+                    break
+                with self.condition:
+                    self.frame, self._captured = image, captured
+                    self._sequence += 1
+                    self.condition.notify_all()
+        finally:
+            with self.condition:
+                self.closed = True
+                self.condition.notify_all()
+
+    def read(self):
+        with self.condition:
+            self.condition.wait_for(
+                lambda: self._sequence != self.last_sequence or self.closed, timeout=1)
+            if self._sequence == self.last_sequence:
+                return None
+            self.last_sequence, self.last_capture_ns = self._sequence, self._captured
+            return self.frame
+
+    def release(self):
+        self.closed = True
+        with self.condition:
+            self.condition.notify_all()
+        # Normal capture should finish before destroying its OpenCV handle.
+        self.thread.join(timeout=2)
+        self.cap.release()
+        if self.thread.is_alive():
+            self.thread.join(timeout=1)
+
+
+class CameraInput:
+    def __init__(self, devices=(1, 0), mode="auto", directory=None):
+        self.directory = Path(directory or default_stream_dir())
+        self.owner = None
+        self.source = None
+        if mode == "stream" or (mode == "auto" and service_running(self.directory)):
+            self.source = SharedFrameReader(self.directory)
+            source_info = self.source.info.get("source", {})
+            if source_info.get("kind") == "camera" and str(source_info.get("device")) not in map(str, devices):
+                self.source.release()
+                raise CameraStreamError("Camera service uses a different device from this vision setup")
+            self.mode = "stream"
+        else:
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self.owner = FileMutex(self.directory / "owner.lock")
+            if not self.owner.acquire(0):
+                self.owner.close()
+                self.owner = None
+                raise CameraStreamError("A camera service or direct reader already owns this camera")
+            try:
+                self.source = LatestCamera(devices)
+            except BaseException:
+                self.owner.close()
+                self.owner = None
+                raise
+            self.mode = "direct"
+
+    @property
+    def last_capture_ns(self):
+        return self.source.last_capture_ns
+
+    @property
+    def sequence(self):
+        return self.source.sequence if self.mode == "stream" else self.source.last_sequence
+
+    def read(self):
+        return self.source.read()
+
+    def release(self):
+        try:
+            if self.source is not None:
+                self.source.release()
+        finally:
+            if self.owner is not None:
+                self.owner.close()
+                self.owner = None
+
+
+def camera_for_setup(template, mode="auto", directory=None):
+    """Preserve calibration/rotation while replacing only frame acquisition."""
+    devices = getattr(template, "device_candidates", None)
+    if devices is None:
+        if mode == "stream":
+            raise CameraStreamError("This camera setup does not declare a local capture device")
+        return template, None
+    source = CameraInput(devices, mode, directory)
+
+    def getter():
+        return source.read()
+
+    getter.source = source  # Existing Camera.release() owns its source cleanup.
+    camera = copy.copy(template)
+    camera.frame_getter, camera._released = getter, False
+    return camera, source
