@@ -180,8 +180,14 @@ def main(argv=None):
             if not success:
                 print("Camera stopped or could not be opened.")
                 break
+            if not args.headless and processed_frames == 0:
+                cv2.resizeWindow("Camera", 960, round(960 * frame.shape[0] / frame.shape[1]))
             read_done = time.monotonic()
 
+            # Camera updates intrinsics from the actual capture size, including
+            # the sensor mode's field of view and any configured rotation.
+            estimator.K = camera.K
+            estimator.D = camera.D
             board_result = estimator.get_board_transform(frame)
             corners, ids, _ = detector.detectMarkers(frame)
             tracked_markers = tracker.update(frame, corners, ids)

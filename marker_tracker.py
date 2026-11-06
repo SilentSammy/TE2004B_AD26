@@ -11,9 +11,20 @@ class MarkerTracker:
         self.tracks = {}
 
     def _reset(self, marker_id, gray, corners):
-        mask = np.zeros(gray.shape, dtype=np.uint8)
-        cv2.fillConvexPoly(mask, corners.astype(np.int32), 255)
-        points = cv2.goodFeaturesToTrack(gray, 100, 0.01, 5, mask=mask)
+        # Work only near this marker, not over a full HD image for every ID.
+        # Keep points in full-frame coordinates for subsequent optical flow.
+        x, y, w, h = cv2.boundingRect(corners.astype(np.float32))
+        x0, y0 = max(0, x - 3), max(0, y - 3)
+        x1, y1 = min(gray.shape[1], x + w + 3), min(gray.shape[0], y + h + 3)
+        points = None
+        if x1 > x0 and y1 > y0:
+            region = gray[y0:y1, x0:x1]
+            offset = np.array([x0, y0], dtype=np.float32)
+            mask = np.zeros(region.shape, dtype=np.uint8)
+            cv2.fillConvexPoly(mask, (corners - offset).astype(np.int32), 255)
+            points = cv2.goodFeaturesToTrack(region, 100, 0.01, 5, mask=mask)
+            if points is not None:
+                points += offset
         self.tracks[marker_id] = {
             "anchor_points": points,
             "points": None if points is None else points.copy(),

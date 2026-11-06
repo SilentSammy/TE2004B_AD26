@@ -78,12 +78,12 @@ does not add authentication.
 
 The viewer encoder runs in a separate, lower-priority process and only works
 when images are requested. It encodes once for all viewers, with at most eight
-concurrent image clients. Defaults are **10 FPS**, **640 px maximum width**,
+concurrent image clients. Defaults are **10 FPS**, **1280 px maximum width**,
 and JPEG quality **80**. Viewer resizing and compression do not affect raw
 detection frames or calibration. Configure viewing through the launcher:
 
 ```bash
-bash run.sh --stream-port 8080 --stream-fps 10 --stream-width 640 --stream-quality 80
+bash run.sh --stream-port 8080 --stream-fps 10 --stream-width 1280 --stream-quality 80
 ```
 
 The launcher cleans up the service it started when vision exits or the launcher
@@ -107,7 +107,16 @@ python camera_stream.py --run-vision         # streaming + main.py, without hots
 Shared frames use a per-user memory-backed directory on Linux, discovered
 consistently from GUI and SSH sessions. All components accept `--stream-dir PATH`
 for separate instances/tests. Capture size and rotation must match the selected
-setup's calibration; the service preserves the camera's default capture size.
+setup's calibration. The lab camera configuration in `vision_setup.py` requests
+**1920 x 1080 at 30 FPS using USB MJPEG**, its highest advertised resolution.
+Detection receives full-resolution decoded frames, while browser viewers receive
+1280 x 720 images. Direct capture uses the same camera configuration.
+
+The camera stores its reference calibration resolution and adapts intrinsics to
+the actual frames before board pose estimation. For this lab camera, the measured
+1080p mode reveals a wider horizontal view: the 640 x 480 calibration is scaled
+by 2.25 with a 240-pixel horizontal offset (`calibration_fit="expand"`). A different
+camera or optical zoom requires its own calibration and sensor-mode mapping.
 
 For SSH/CI use `--headless`; `--max-frames N` provides a bounded test run. This
 example uses generated ArUco frames and does not open camera hardware:

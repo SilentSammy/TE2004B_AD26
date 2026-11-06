@@ -8,7 +8,6 @@ import board_est
 import plotter2d
 from dataclasses import dataclass, field
 from pathlib import Path
-from cam_config import LatestCamera
 
 
 @dataclass(kw_only=True)
@@ -47,7 +46,7 @@ class VisionSetup:
 def _get_webcam_image():
     source = getattr(_get_webcam_image, "source", None)
     if source is None:
-        source = LatestCamera()
+        source = _webcam.open_capture()
         _get_webcam_image.source = source
         _get_webcam_image.cap = source.cap
     return source.read()
@@ -57,6 +56,12 @@ _webcam = cam_config.Camera(
     D=np.array([0.15017654, -1.34648531, 0.00405315, -0.00410719, 2.41472656], dtype=np.float32),
     frame_getter=_get_webcam_image,
     device_candidates=(1, 0),
+    capture_size_wh=(1920, 1080),
+    capture_fps=30,
+    capture_fourcc="MJPG",
+    calibration_size_wh=(640, 480),
+    # Measured on this camera: 1080p reveals more horizontal field of view.
+    calibration_fit="expand",
 )
 
 board_letter = board_config.GridboardConfig(
@@ -115,7 +120,7 @@ VISION_SETUPS = {
     ),
 }
 
-DEFAULT_SETUP = VISION_SETUPS["setup_90cm"]
+DEFAULT_SETUP = VISION_SETUPS["setup_160cm"]
 
 
 if __name__ == "__main__":

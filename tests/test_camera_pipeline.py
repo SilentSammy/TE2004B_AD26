@@ -165,6 +165,72 @@ class CameraServiceTests(unittest.TestCase):
 
 
 class LauncherTests(unittest.TestCase):
+    def test_marker_features_keep_global_coordinates_and_track_motion(self):
+        from marker_tracker import MarkerTracker
+        image = np.full((720, 1280, 3), 255, np.uint8)
+        marker = cv2.aruco.generateImageMarker(
+            cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), 4, 100)
+        image[250:350, 700:800] = cv2.cvtColor(marker, cv2.COLOR_GRAY2BGR)
+        corners = np.float32([[[700, 250], [799, 250], [799, 349], [700, 349]]])
+        tracker = MarkerTracker()
+        tracker.update(image, [corners], np.array([[4]]))
+        points = tracker.tracks[4]["points"]
+        self.assertGreaterEqual(points[:, :, 0].min(), 700)
+        self.assertGreaterEqual(points[:, :, 1].min(), 250)
+        moved = cv2.warpAffine(image, np.float32([[1, 0, 3], [0, 1, 2]]), (1280, 720),
+                               borderValue=(255, 255, 255))
+        tracked = tracker.update(moved, [], None)
+        self.assertEqual(len(tracked), 1)
+        self.assertTrue(tracked[0][2])
+        np.testing.assert_allclose(tracked[0][1], corners.reshape(4, 2) + [3, 2], atol=0.6)
+
+    def test_fullhd_calibration_accounts_for_wider_sensor_view(self):
+        from cam_config import Camera
+        K = np.array([[735., 0, 308.], [0, 736., 242.], [0, 0, 1.]])
+        frame = np.zeros((1080, 1920, 3), np.uint8)
+        camera = Camera(K, np.zeros(5), lambda: frame,
+                        calibration_size_wh=(640, 480), calibration_fit="expand")
+        camera.read()
+        # Compare projected 3D points, including distortion, between modes.
+        points = np.array([[0., 0., 2.], [.2, -.1, 1.], [-.3, .2, 3.]])
+        old, _ = cv2.projectPoints(points, np.zeros(3), np.zeros(3), K, camera.D)
+        new, _ = cv2.projectPoints(points, np.zeros(3), np.zeros(3), camera.K, camera.D)
+        expected = old * 2.25
+        expected[:, :, 0] += 240
+        np.testing.assert_allclose(new, expected)
+        np.testing.assert_array_equal(K, camera._calibration_K)
+
+    def test_capture_requests_mjpeg_before_fullhd_dimensions(self):
+        capture = Mock()
+        capture.isOpened.return_value = True
+        capture.read.return_value = (False, None)
+        with patch("cam_config.cv2.VideoCapture", return_value=capture):
+            source = LatestCamera((0,), 1920, 1080, 30, "MJPG")
+            source.release()
+        props = [call.args for call in capture.set.call_args_list]
+        self.assertEqual(props[:4], [
+            (cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG")),
+            (cv2.CAP_PROP_FRAME_WIDTH, 1920), (cv2.CAP_PROP_FRAME_HEIGHT, 1080),
+            (cv2.CAP_PROP_FPS, 30)])
+
+    def test_linux_capture_falls_back_after_usb_device_numbers_change(self):
+        stable = Path("/dev/v4l/by-id/usb-test-camera-video-index0")
+        failed_one, failed_zero, working = Mock(), Mock(), Mock()
+        failed_one.isOpened.return_value = failed_zero.isOpened.return_value = False
+        working.isOpened.return_value = True
+        working.read.return_value = (False, None)
+        with patch("cam_config.sys.platform", "linux"), \
+                patch("cam_config.Path.glob", side_effect=[[stable], [Path("/dev/video2")]]), \
+                patch("cam_config.cv2.VideoCapture", side_effect=[failed_one, failed_zero, working]) as capture:
+            source = LatestCamera((1, 0))
+            try:
+                self.assertEqual(source.device, str(stable))
+                self.assertEqual([call.args[0] for call in capture.call_args_list], [1, 0, str(stable)])
+                failed_one.release.assert_called_once()
+                failed_zero.release.assert_called_once()
+            finally:
+                source.release()
+
     def test_streamer_opens_selected_setup_directly_and_releases_it(self):
         """A publisher must not attach to its own stream or ignore DEFAULT_SETUP."""
         import vision_setup
