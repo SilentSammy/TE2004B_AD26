@@ -354,6 +354,8 @@ def run_vision(argv=None):
     parser.add_argument("--stream-fps", type=float, default=10)
     parser.add_argument("--stream-width", type=int, default=1280)
     parser.add_argument("--stream-quality", type=int, default=80)
+    parser.add_argument("--no-camera-viewer", action="store_true",
+                        help="disable the browser/JPEG camera viewer")
     parser.add_argument("--synthetic-camera", action="store_true", help="test without camera hardware")
     args, main_args = parser.parse_known_args(argv)
     import main as vision_main
@@ -389,6 +391,8 @@ def run_vision(argv=None):
                            "--jpeg-quality", str(args.stream_quality)]
                 if args.synthetic_camera:
                     command.append("--synthetic")
+                if args.no_camera_viewer:
+                    command.append("--no-http")
                 service = subprocess.Popen(command, start_new_session=os.name != "nt")
             elif args.synthetic_camera:
                 raise CameraStreamError("Use a separate --stream-dir for a synthetic camera")

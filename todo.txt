@@ -1,2 +1,0 @@
-- Make marker_config.json load on change
-- Make camera stream accessible to other network devices

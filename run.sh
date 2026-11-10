@@ -82,6 +82,23 @@ PY
   set -- --setup "$SELECTED_SETUP" "$@"
 fi
 
+ASK_BALLS=true
+for arg in "$@"; do
+  case "$arg" in
+    --ball-detection|--no-ball-detection|--help|-h) ASK_BALLS=false ;;
+  esac
+done
+if "$ASK_BALLS"; then
+  while true; do
+    read -r -p "Enable ball detection? (y/N): " answer || answer=n
+    case "$answer" in
+      y|Y|yes|YES) set -- --ball-detection "$@"; break ;;
+      ""|n|N|no|NO) set -- --no-ball-detection "$@"; break ;;
+      *) echo "Please enter y or n." ;;
+    esac
+  done
+fi
+
 echo "Using broadcast address: $BROADCAST"
 echo "Starting camera streaming and vision. Press Ctrl+C to stop both."
 # Replace Bash with the supervisor so terminal signals reach it directly.

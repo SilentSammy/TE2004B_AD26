@@ -58,6 +58,17 @@ This opens two windows:
 Per-second diagnostics (FPS, detected marker positions) are
 printed to the console. Press `q` or `Esc` in a window to quit.
 
+Window sizes and positions default to the saved lab layout in
+`main.py`'s `DEFAULT_WINDOW_LAYOUT`. Override them with `X Y WIDTH HEIGHT`:
+
+```bash
+bash run.sh --camera-window 52 20 1300 708 --board-window 1369 20 548 1011
+```
+
+The same arguments work with `python main.py`. Layout is applied once at launch;
+you can move and resize either window afterward. Window borders and desktop
+scaling can affect the result; native Wayland backends may restrict positioning.
+
 ## Camera capture and viewing
 
 `camera_stream.py` is the streaming entry point. Camera reading and source
@@ -173,23 +184,49 @@ renders them; the estimator receives each marker's selected height. Appearance
 changes affect the board plot, while height corrections also affect telemetry.
 The camera frame and telemetry still identify markers by their numeric IDs.
 
-Settings and images load once at startup; restart to apply edits. Use `{}` for
-all defaults, or override the selected setup's file for one run:
+Settings load at startup and reload when the JSON file changes, checked every
+0.5 seconds. Text, colors, image paths, image scales, and heights update together;
+removed overrides return to defaults. Images are decoded again on each JSON
+reload and the old sprite cache is cleared. Use `{}` for all defaults, or override
+the selected setup's file for one run:
 
 ```bash
 python main.py --marker-config path/to/marker_config.json
 ```
 
-Missing, unreadable, incorrectly encoded, or malformed JSON falls back to the
-defaults with a console message. Invalid entries or fields are skipped while
+Missing, unreadable, incorrectly encoded, or malformed JSON uses defaults at
+startup. During a running session it retains the last working configuration
+until a valid change is saved, with one message per changed file version.
+Invalid entries or fields are skipped while
 valid settings are retained. Missing or corrupt images fall back to text and
 color. The standalone `plotter2d.py` demo uses its Python overrides.
 
-## Broadcasting telemetry
+## Pose telemetry: unicast subscriptions and legacy broadcast
 
-By default, `main.py` only shows the local windows and does not send
-anything over the network. To broadcast marker/board telemetry as JSON over
-UDP, pass `--broadcast` with your network's broadcast address:
+`bash run.sh` asks `Enable ball detection? (y/N):` after selecting the setup.
+Press Enter to keep it off, or enter `y` to detect the best blue circular
+candidate and show/send its field position. HSV thresholds are in
+`ball_thresholds.txt`; this is a single-ball detector. The ball centre defaults
+to 0.02 m above the board (`--ball-height`). For scripted launches, use
+`--ball-detection` or `--no-ball-detection` to skip this prompt.
+
+`main.py` always accepts unicast subscriptions on UDP `PORT + 1` and sends pose
+packets back to the UDP endpoint that requested them. The legacy broadcast data
+port defaults to `5000`. Clients send `POSE_SUBSCRIBE` once per second to port `5001`; an
+entry expires after five seconds, or immediately after `POSE_UNSUBSCRIBE`.
+Unicast is preferred because Wi-Fi can acknowledge and retry those frames.
+If another program owns that port, set the same explicit override on both ends,
+for example `--subscription-port 5051`.
+
+For a ready-to-use client:
+
+```bash
+python telemetry_listener.py --server 192.168.12.1
+```
+
+Legacy broadcast remains available for discovery and existing consumers. Pass
+`--broadcast` with the network's broadcast address to enable it alongside
+unicast:
 
 ```bash
 python main.py --broadcast 10.42.0.255
@@ -199,13 +236,25 @@ Any device listening on that UDP port (default `5000`) receives packets like:
 
 ```json
 {
+  "schema_version": 1,
+  "stream_id": "c34a...",
   "timestamp": 1695123456.789,
+  "frame_sequence": 166,
+  "frame_age_ms": 38.2,
   "board_detected": true,
   "markers": [
     {"id": 3, "x": -0.01, "y": 0.01, "angle": 91.0}
-  ]
+  ],
+  "balls": []
 }
 ```
+
+`frame_sequence` increases within one camera `stream_id`; a changed
+`stream_id` indicates capture restarted. `frame_age_ms` is measured on the
+vision computer from capture return to packet generation. Consumers should
+ignore unknown fields, tolerate missing timing fields from older servers, and
+treat missing optional collections as empty. The empty `balls` collection is
+reserved for optional ball localization.
 
 ### Common commands
 
@@ -219,6 +268,9 @@ python main.py --broadcast 10.42.0.255 --port 5050
 # Custom rate, e.g. every frame at ~30 Hz, or slower at 1 Hz
 python main.py --broadcast 10.42.0.255 --rate 30
 python main.py --broadcast 10.42.0.255 --rate 1
+
+# Lowest-overhead stack: no OpenCV windows or browser/JPEG viewer
+bash run.sh --headless --no-camera-viewer --rate 30
 ```
 
 ### Finding your broadcast address

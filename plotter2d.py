@@ -261,7 +261,7 @@ class BoardPlotter2D:
         else:
             region[mask > 0] = warped[mask > 0]
 
-    def render(self, markers=()):
+    def render(self, markers=(), balls=(), ball_radius=0.02):
         """Render (id, board_corners, is_tracked) marker tuples."""
         canvas = self.background.copy()
         for marker_id, corners, is_tracked in markers:
@@ -271,6 +271,9 @@ class BoardPlotter2D:
                 np.asarray(corners, dtype=np.float32).reshape(4, 2),
                 is_tracked,
             )
+        for ball in balls:
+            center = tuple(np.rint(self._to_pixels([(ball["x"], -ball["y"])])[0]).astype(int))
+            cv2.circle(canvas, center, max(3, round(ball_radius * self.scale)), (255, 150, 40), -1)
         return canvas
 
 

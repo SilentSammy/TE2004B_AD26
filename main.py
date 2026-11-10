@@ -1,22 +1,29 @@
 import argparse
 import json
 import math
-import socket
 import time
+import uuid
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from marker_tracker import MarkerTracker
+from telemetry import TelemetryPublisher
 from cam_config import camera_for_setup
 from frame_stream import CameraStreamError, default_stream_dir
 from vision_setup import DEFAULT_SETUP, VISION_SETUPS
 
 DEFAULT_TELEMETRY_PORT = 5000
+# Captured from the lab desktop. Values are x, y, client width, client height;
+# OpenCV positions account for the desktop's frame/border offsets.
+DEFAULT_WINDOW_LAYOUT = {
+    "Camera": (52, 20, 1300, 708),
+    "Board": (1369, 20, 548, 1011),
+}
 
 
-def load_marker_config(path):
+def load_marker_config(path, *, strict=False):
     """Return validated appearance and height overrides; errors use defaults."""
     appearances, heights = {}, {}
     if path is None:
@@ -28,6 +35,8 @@ def load_marker_config(path):
         if not isinstance(entries, dict):
             raise ValueError("expected an object keyed by marker ID")
     except (OSError, UnicodeError, ValueError, RuntimeError, RecursionError) as error:
+        if strict:
+            raise
         print(f"Marker config unavailable; using defaults: {error}")
         return appearances, heights
 
@@ -95,6 +104,52 @@ def load_marker_config(path):
     return appearances, heights
 
 
+class MarkerConfigWatcher:
+    """Check metadata twice per second; replace settings only after a valid read.
+
+    Initial failures use defaults. Later failures retain the last good settings,
+    so temporary/partial editor saves cannot interrupt tracking.
+    """
+
+    def __init__(self, path):
+        self.path = Path(path) if path is not None else None
+        self.current = ({}, {})
+        self.signature = object()
+        self.next_check = 0.0
+
+    def poll(self, now=None):
+        now = time.monotonic() if now is None else now
+        if self.path is None or now < self.next_check:
+            return False
+        self.next_check = now + 0.5
+        try:
+            stat = self.path.stat()
+            signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        except OSError:
+            signature = None
+        if signature == self.signature:
+            return False
+        self.signature = signature
+        try:
+            updated = load_marker_config(self.path, strict=True)
+        except (OSError, UnicodeError, ValueError, RuntimeError, RecursionError) as error:
+            print(f"Marker config not updated; keeping previous settings: {error}", flush=True)
+            return False
+        self.current = updated
+        print(f"Marker config loaded: {self.path}", flush=True)
+        return True
+
+
+def apply_marker_appearances(plotter, defaults, appearances):
+    """Rebuild from defaults so deleting a JSON override really removes it."""
+    overrides = {marker_id: dict(style) for marker_id, style in defaults.items()}
+    for marker_id, style in appearances.items():
+        overrides.setdefault(marker_id, {}).update(style)
+    plotter.marker_overrides = overrides
+    # Discard sprites holding earlier text/colors/images and avoid cache growth.
+    plotter.marker_images.clear()
+
+
 def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--camera-source", choices=("auto", "direct", "stream"), default="auto",
@@ -102,7 +157,16 @@ def argument_parser():
     parser.add_argument("--stream-dir", type=Path, default=default_stream_dir(),
                         help="local camera service runtime directory")
     parser.add_argument("--headless", action="store_true", help="run without camera/board windows")
+    balls = parser.add_mutually_exclusive_group()
+    balls.add_argument("--ball-detection", action="store_true", help="enable blue ball detection (default: off)")
+    balls.add_argument("--no-ball-detection", dest="ball_detection", action="store_false")
+    parser.set_defaults(ball_detection=False)
+    parser.add_argument("--ball-height", type=float, default=0.02, help="ball centre height in metres")
     parser.add_argument("--max-frames", type=int, help="stop after this many processed frames (testing)")
+    for name, geometry in DEFAULT_WINDOW_LAYOUT.items():
+        parser.add_argument(f"--{name.lower()}-window", type=int, nargs=4,
+                            metavar=("X", "Y", "WIDTH", "HEIGHT"), default=geometry,
+                            help=f"{name} window layout (default: {' '.join(map(str, geometry))})")
     parser.add_argument(
         "--marker-config", type=Path,
         help="override the selected vision setup's marker config JSON",
@@ -115,7 +179,7 @@ def argument_parser():
     parser.add_argument(
         "--broadcast",
         default=None,
-        help="telemetry broadcast address; telemetry is not sent if omitted",
+        help="optional legacy telemetry broadcast address; unicast remains available if omitted",
     )
     parser.add_argument(
         "--port",
@@ -129,18 +193,35 @@ def argument_parser():
         default=10.0,
         help="telemetry send rate in Hz (default: 10)",
     )
+    parser.add_argument(
+        "--subscription-port",
+        type=int,
+        help="unicast subscription UDP port (default: telemetry port + 1)",
+    )
     return parser
 
 
 def main(argv=None):
     parser = argument_parser()
     args = parser.parse_args(argv)
+    if not math.isfinite(args.ball_height) or args.ball_height < 0:
+        parser.error("--ball-height must be finite and nonnegative")
     if args.max_frames is not None and args.max_frames < 1:
         parser.error("--max-frames must be positive")
+    if not 1 <= args.port <= 65534:
+        parser.error("--port must leave room for the subscription port (1-65534)")
+    if args.subscription_port is not None and not 1 <= args.subscription_port <= 65535:
+        parser.error("--subscription-port must be between 1 and 65535")
+    for geometry in (args.camera_window, args.board_window):
+        if geometry[2] < 1 or geometry[3] < 1:
+            parser.error("Window width and height must be positive")
     setup = VISION_SETUPS[args.setup] if args.setup is not None else DEFAULT_SETUP
 
+    subscription_port = args.subscription_port or args.port + 1
     if args.broadcast is None:
-        print("No --broadcast address given; telemetry will not be sent.")
+        print(f"Telemetry: unicast subscriptions on UDP {subscription_port}; broadcast disabled.")
+    else:
+        print(f"Telemetry: UDP {args.port} broadcast plus subscriptions on UDP {subscription_port}.")
     telemetry_interval = 1 / args.rate if args.rate > 0 else float("inf")
 
     try:
@@ -154,34 +235,47 @@ def main(argv=None):
     detector = setup.detector
     plotter = None if args.headless else setup.plotter
     config_path = args.marker_config if args.marker_config is not None else setup.marker_config_path
-    appearances, marker_heights = load_marker_config(config_path)
+    config_watcher = MarkerConfigWatcher(config_path)
+    config_watcher.poll()
+    appearances, marker_heights = config_watcher.current
+    default_appearances = ({marker_id: dict(style) for marker_id, style in plotter.marker_overrides.items()}
+                           if plotter is not None else {})
     if plotter is not None:
-        plotter.marker_overrides = {
-            marker_id: {**plotter.marker_overrides.get(marker_id, {}), **style}
-            for marker_id, style in (plotter.marker_overrides | appearances).items()
-        }
+        apply_marker_appearances(plotter, default_appearances, appearances)
     tracker = MarkerTracker()
+    ball_detector = None
+    if args.ball_detection:
+        from ball_det import BallDetector
+        ball_detector = BallDetector()
+    try:
+        telemetry_publisher = TelemetryPublisher(args.broadcast, args.port, subscription_port)
+    except OSError as error:
+        camera.release()
+        print(f"Cannot start telemetry subscriptions on UDP {subscription_port}: {error}", flush=True)
+        return 1
 
-    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    stream_id = (frame_source.source.info.get("session")
+                 if frame_source and frame_source.mode == "stream" else uuid.uuid4().hex)
 
-    stats_at = last_plot = last_telemetry = time.monotonic()
-    frames = read_time = vision_time = plot_time = 0.0
+    stats_at = last_plot = time.monotonic()
+    next_telemetry = stats_at + telemetry_interval
+    frames = publications = read_time = vision_time = plot_time = 0.0
     processed_frames = 0
 
     try:
         if not args.headless:
             cv2.namedWindow("Camera", cv2.WINDOW_NORMAL)
             cv2.namedWindow("Board", cv2.WINDOW_NORMAL)
-            cv2.resizeWindow("Board", 400, round(400 * plotter.height / plotter.width))
         while True:
             started = time.monotonic()
+            if config_watcher.poll(started):
+                appearances, marker_heights = config_watcher.current
+                if plotter is not None:
+                    apply_marker_appearances(plotter, default_appearances, appearances)
             success, frame = camera.read()
             if not success:
                 print("Camera stopped or could not be opened.")
                 break
-            if not args.headless and processed_frames == 0:
-                cv2.resizeWindow("Camera", 960, round(960 * frame.shape[0] / frame.shape[1]))
             read_done = time.monotonic()
 
             # Camera updates intrinsics from the actual capture size, including
@@ -191,6 +285,15 @@ def main(argv=None):
             board_result = estimator.get_board_transform(frame)
             corners, ids, _ = detector.detectMarkers(frame)
             tracked_markers = tracker.update(frame, corners, ids)
+            # Segment the original frame before coloured marker annotations.
+            ball_detections = ball_detector.detect(frame) if ball_detector else []
+            balls = []
+            if board_result is not None:
+                for _, centroid in ball_detections:
+                    x, y = estimator.project_point_to_board(
+                        board_result[1], centroid, frame.shape, z=args.ball_height)
+                    if math.isfinite(x) and math.isfinite(y):
+                        balls.append({"x": round(float(x), 3), "y": round(float(-y), 3)})
             markers = []
             positions = []
             telemetry_markers = []
@@ -240,23 +343,39 @@ def main(argv=None):
 
             vision_done = time.monotonic()
             if not args.headless:
+                for contour, _ in ball_detections:
+                    cv2.drawContours(frame, [contour], -1, (0, 255, 255), 2)
                 cv2.imshow("Camera", frame)
-            if plotter is not None and vision_done - last_plot >= 0.1:
-                cv2.imshow("Board", plotter.render(markers))
+            if plotter is not None and (processed_frames == 0 or vision_done - last_plot >= 0.1):
+                cv2.imshow("Board", plotter.render(markers, balls, ball_radius=args.ball_height))
                 last_plot = vision_done
-            if args.broadcast is not None and vision_done - last_telemetry >= telemetry_interval:
+            if not args.headless and processed_frames == 0:
+                for name, geometry in (("Camera", args.camera_window), ("Board", args.board_window)):
+                    x, y, width, height = geometry
+                    cv2.resizeWindow(name, width, height)
+                    try:
+                        cv2.moveWindow(name, x, y)
+                    except cv2.error as error:
+                        print(f"Cannot position {name} window on this display backend: {error}", flush=True)
+            if vision_done >= next_telemetry:
                 telemetry = {
+                    "schema_version": 1,
+                    "stream_id": stream_id,
                     "timestamp": round(time.time(), 3),
                     "board_detected": board_result is not None,
                     "markers": telemetry_markers,
+                    "balls": balls,
                 }
                 if frame_source:
                     telemetry.update(
                         frame_sequence=frame_source.sequence,
                         frame_age_ms=round((time.perf_counter_ns() - frame_source.last_capture_ns) / 1e6, 3),
                     )
-                udp.sendto(json.dumps(telemetry).encode(), (args.broadcast, args.port))
-                last_telemetry = vision_done
+                telemetry_publisher.send(telemetry)
+                publications += 1
+                # Advance from the prior deadline. This avoids a near-10 FPS
+                # loop accidentally publishing every second frame at ~5 Hz.
+                next_telemetry = max(next_telemetry + telemetry_interval, vision_done)
             plot_done = time.monotonic()
 
             frames += 1
@@ -264,14 +383,16 @@ def main(argv=None):
             vision_time += vision_done - read_done
             plot_time += plot_done - vision_done
             if plot_done - stats_at >= 1.0:
+                stats_elapsed = plot_done - stats_at
                 print(
-                    f"{frames / (plot_done - stats_at):.1f} FPS | "
+                    f"{frames / stats_elapsed:.1f} FPS | {publications / stats_elapsed:.1f} Hz telemetry | "
                     f"board {'yes' if board_result else 'no'} | "
-                    f"{', '.join(positions) or 'no markers'}",
+                    f"{', '.join(positions) or 'no markers'} | "
+                    f"subscribers {telemetry_publisher.subscriber_count}",
                     flush=True,
                 )
                 stats_at = plot_done
-                frames = read_time = vision_time = plot_time = 0.0
+                frames = publications = read_time = vision_time = plot_time = 0.0
 
             processed_frames += 1
             if args.max_frames and processed_frames >= args.max_frames:
@@ -284,7 +405,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         return 130
     finally:
-        udp.close()
+        telemetry_publisher.close()
         camera.release()
         if not args.headless:
             cv2.destroyAllWindows()
