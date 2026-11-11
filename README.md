@@ -341,8 +341,18 @@ ip -4 addr show dev wlo1            # confirm the assigned IP and `brd` address
 ```
 
 The lab desktop uses a different arrangement: `create_ap.service` manages
-SSID `embedded` on the built-in Wi-Fi adapter `wlp1s0`, using virtual interface
-`ap0` at `192.168.12.1/24`. A separate USB Wi-Fi adapter connects to `Tec`.
+SSID `embedded` at `192.168.12.1/24` on the TP-Link RTL8822BU USB adapter
+`wlxec750cbd6bcd`. The built-in Atheros adapter `wlp1s0` remains available for
+the internet connection selected in the desktop GUI. The older Ralink USB
+adapter `wlxd85d4c8af3fa` is the first hotspot fallback.
+
+The hotspot uses channel 6, 20 MHz, with 802.11n enabled. The TP-Link uses the
+RinCat `rtl88x2bu` DKMS driver with USB autosuspend and Wi-Fi power management
+disabled. `configure_lab_network.sh` prefers that adapter, falls back to the
+Ralink when necessary, and uses the built-in radio only when it is idle. It
+will not disconnect an active built-in internet connection to create a
+hotspot. Internet connections remain selectable through the desktop network
+settings.
 Its hotspot settings are in `/etc/create_ap.conf`; NetworkManager's saved
 `embedded` profile is a client connection, not this hotspot.
 

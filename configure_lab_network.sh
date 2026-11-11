@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Verify/restore the lab's existing create_ap hotspot.
-# Internet connections remain under the desktop's network settings.
+# Verify/restore the lab hotspot while leaving internet selection to the GUI.
+# Prefer the RTL8822BU TP-Link for AP duty and keep the built-in radio as uplink.
 set -euo pipefail
 
 JSON_OUTPUT=false
@@ -22,7 +22,7 @@ done
 exec 3>&1
 exec 1>&2
 ERROR_MESSAGE=
-AP_IFACE= AP_ADDRESS= BROADCAST= HOTSPOT_SSID=
+AP_IFACE= AP_ADDRESS= BROADCAST= HOTSPOT_SSID= INTERNET_IFACE=
 
 finish() {
   local status=$?
@@ -33,11 +33,11 @@ finish() {
   fi
   if "$JSON_OUTPUT"; then
     python3 - "$status" "$ERROR_MESSAGE" "$AP_IFACE" "$AP_ADDRESS" \
-      "$BROADCAST" "$HOTSPOT_SSID" >&3 <<'PY'
+      "$BROADCAST" "$HOTSPOT_SSID" "$INTERNET_IFACE" >&3 <<'PY'
 import json
 import sys
 
-status, error, interface, address, broadcast, ssid = sys.argv[1:]
+status, error, interface, address, broadcast, ssid, internet_interface = sys.argv[1:]
 print(json.dumps({
     "success": status == "0",
     "error": error or None,
@@ -46,6 +46,7 @@ print(json.dumps({
     "hotspot_cidr": address or None,
     "broadcast": broadcast or None,
     "hotspot_ssid": ssid or None,
+    "internet_interface": internet_interface or None,
 }))
 PY
   fi
@@ -76,7 +77,7 @@ as_root() {
   fi
 }
 
-for command in python3 systemctl ip iw awk sleep timeout; do
+for command in python3 systemctl ip iw awk grep sed sleep timeout readlink basename; do
   command -v "$command" >/dev/null || fail "Required command is missing: $command"
 done
 [ "$EUID" -eq 0 ] || command -v sudo >/dev/null || fail "sudo is required for repairs."
@@ -93,13 +94,66 @@ config_value() {
   }' "$AP_CONFIG"
 }
 
-WIFI_IFACE=$(config_value WIFI_IFACE)
+TP_LINK_IFACE=wlxec750cbd6bcd
+RALINK_IFACE=wlxd85d4c8af3fa
+BUILTIN_IFACE=wlp1s0
+INTERNET_IFACE=$BUILTIN_IFACE
+
+interface_exists() {
+  ip link show dev "$1" >/dev/null 2>&1
+}
+
+supports_ap() {
+  local phy
+  phy=$(iw dev "$1" info 2>/dev/null | awk '$1 == "wiphy" {print "phy" $2; exit}')
+  [ -n "$phy" ] && iw phy "$phy" info 2>/dev/null | grep -qE '^[[:space:]]+\* AP$'
+}
+
+# Do not connect or disconnect the internet radio here. Users retain control of
+# that connection in the desktop GUI; we only reserve it as the NAT uplink.
+interface_exists "$INTERNET_IFACE" ||
+  fail "Built-in internet adapter $INTERNET_IFACE is missing."
+
+if interface_exists "$TP_LINK_IFACE" && supports_ap "$TP_LINK_IFACE"; then
+  WIFI_IFACE=$TP_LINK_IFACE
+  WIFI_DRIVER=$(basename "$(readlink -f "/sys/class/net/$WIFI_IFACE/device/driver" 2>/dev/null || true)")
+  [ "$WIFI_DRIVER" = "rtl88x2bu" ] ||
+    fail "TP-Link is present but uses '$WIFI_DRIVER', not the required rtl88x2bu driver."
+  NO_VIRT=1
+  IEEE80211N=1
+elif interface_exists "$RALINK_IFACE" && supports_ap "$RALINK_IFACE"; then
+  echo "TP-Link unavailable; falling back to the older Ralink hotspot adapter."
+  WIFI_IFACE=$RALINK_IFACE
+  NO_VIRT=1
+  IEEE80211N=0
+elif interface_exists "$BUILTIN_IFACE" && supports_ap "$BUILTIN_IFACE" &&
+     ! iw dev "$BUILTIN_IFACE" link 2>/dev/null | grep -q '^Connected to '; then
+  echo "External hotspot adapters unavailable; falling back to the idle built-in adapter."
+  WIFI_IFACE=$BUILTIN_IFACE
+  NO_VIRT=0
+  IEEE80211N=1
+else
+  fail "No usable external hotspot adapter was found; refusing to disconnect the built-in internet link."
+fi
+
+set_config_value() {
+  local key=$1 value=$2
+  if [ "$(config_value "$key")" != "$value" ]; then
+    as_root sed -i "s|^${key}=.*|${key}=${value}|" "$AP_CONFIG"
+    CONFIG_CHANGED=true
+  fi
+}
+
+CONFIG_CHANGED=false
+set_config_value WIFI_IFACE "$WIFI_IFACE"
+set_config_value INTERNET_IFACE "$INTERNET_IFACE"
+set_config_value NO_VIRT "$NO_VIRT"
+set_config_value IEEE80211N "$IEEE80211N"
+
 HOTSPOT_SSID=$(config_value SSID)
 GATEWAY=$(config_value GATEWAY)
-[ -n "$WIFI_IFACE" ] && [ -n "$HOTSPOT_SSID" ] && [ -n "$GATEWAY" ] ||
-  fail "Missing WIFI_IFACE, SSID or GATEWAY in $AP_CONFIG."
-ip link show dev "$WIFI_IFACE" >/dev/null 2>&1 ||
-  fail "Hotspot adapter $WIFI_IFACE is missing; check its connection."
+[ -n "$HOTSPOT_SSID" ] && [ -n "$GATEWAY" ] ||
+  fail "Missing SSID or GATEWAY in $AP_CONFIG."
 
 # Discover the actual AP on the configured radio, including virtual interfaces
 # such as ap0. Do not mistake another adapter's hotspot for this one.
@@ -144,6 +198,10 @@ if ! systemctl is-enabled --quiet "$AP_SERVICE"; then
 fi
 if ! systemctl is-active --quiet "$AP_SERVICE"; then
   as_root timeout 45s systemctl start "$AP_SERVICE" || fail "Could not start $AP_SERVICE."
+fi
+if "$CONFIG_CHANGED"; then
+  echo "Hotspot adapter selection changed; restarting $AP_SERVICE..."
+  as_root timeout 45s systemctl restart "$AP_SERVICE" || fail "Could not restart $AP_SERVICE."
 fi
 if ! hotspot_ready; then
   if ! wait_for_hotspot; then
