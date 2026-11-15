@@ -39,6 +39,8 @@ update_repo() {
     git fetch --prune origin '+refs/heads/main:refs/remotes/origin/main'
     git checkout -f -B main origin/main
     git clean -fd
+    git submodule sync --recursive
+    git submodule update --init --recursive
 
     echo "Checkout now matches origin/main at:"
     git --no-pager log -1 --oneline
