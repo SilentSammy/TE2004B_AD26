@@ -38,3 +38,8 @@ project does not need to start a second instance or own the camera.
 The `arduino/` directory contains robot telemetry and relay sketches;
 `zumo2040_bk/` contains the Zumo examples. Printable course marker PDFs remain
 under `resources/pdfs/`.
+
+For the Zumo hardware server and Pico W brain/client firmware, see
+[`robot_firmware/README.md`](robot_firmware/README.md). The tested binary UART
+link supports approximately 100 Hz fast sensors or 50 Hz full sensors while
+accepting motor commands, with a motor-command timeout on the Zumo.

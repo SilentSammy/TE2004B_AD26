@@ -13,6 +13,7 @@ venv/
 /REMOTE_ACCESS.md
 /benchmarks/results/
 /.migration/
+/.firmware_backups/
 
 # Editor and OS files
 .idea/
