@@ -150,3 +150,52 @@ python -m mpremote connect COM3 fs cp .firmware_backups/zumo-before-hardware-ser
 
 The old `remote_control.py` and Pololu examples remain on the Zumo unchanged.
 The Pico W filesystem was empty before this installation.
+
+## Wi-Fi control from the laptop
+
+`host_velocity_client.py` now uses a Pico W endpoint that calls this hardware
+API directly. The old Arduino UDP relay and Zumo `remote_control.py` are not
+part of this command path. Install the optional teleoperation startup on the
+Pico W (the Zumo hardware server firmware stays the same):
+
+```text
+python -m mpremote connect COM8 fs cp robot_firmware/pico_w/velocity_server.py :velocity_server.py + fs cp robot_firmware/pico_w/velocity_main.py :main.py + reset
+```
+
+It joins `embedded` by default. To use another network, create `wifi_config.json`
+on the Pico W with `ssid` and `password` keys. The server prints its IP and ports
+over USB. Discovery uses UDP 5001; wheel commands/status/acknowledgments use UDP
+5002. Join the same reachable LAN on the laptop, then run:
+
+```text
+python host_velocity_client.py --check
+python host_velocity_client.py
+python host_velocity_client.py 192.168.12.45 --check
+python host_velocity_client.py --broadcast 192.168.12.255 --max-pwm 1500
+```
+
+`--check` only sends status and stop commands. Normal mode uses W/S and A/D,
+or the gamepad sticks, with C/right trigger for boost. It verifies the Pico W
+protocol and physical Zumo UART connection before enabling controls. It sends
+unchanged moving commands every 100 ms, stops on Ctrl+C/error, and exits if
+acknowledgments stop for 500 ms. The Pico W and Zumo each enforce a 250 ms
+command timeout. Discovery uses the actual local subnet masks rather than
+assuming the default internet interface is the robot network; `--broadcast`
+can override it.
+
+Commands contain integer `l`/`r` PWM, a random host session ID and an increasing
+sequence number. Stale nonzero commands are rejected, and only one active
+client owns nonzero control. Any client may send a stop. A host session ID is
+for ordering, not authentication; use this service on the trusted robot LAN.
+The endpoint does not change the Zumo firmware or forward UDP packets blindly.
+
+The previous Pico W startup is backed up locally at
+`.firmware_backups/pico-before-velocity-server/main.py`; restore it with
+`mpremote ... fs cp` if returning to a standalone Pico W application.
+It is also retained on the Pico W as `main_uart_example.py`.
+
+`tools/mpremote_no_reset.py` provides board-aware USB line handling: DTR is
+asserted for Pico/Pololu USB CDC and left low for native ESP32 USB. Replace
+`python -m mpremote` with `python tools/mpremote_no_reset.py` when using it.
+Add `resume` to avoid mpremote's automatic soft reset; entering the REPL still
+interrupts a running application, so reset afterward to restart the endpoint.
