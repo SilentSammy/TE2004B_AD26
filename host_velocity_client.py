@@ -246,6 +246,9 @@ def main() -> None:
         status = client.get_status()
         print(f"Connected to {args.robot_ip}:{args.port}: {status['protocol']}")
         print(f"Zumo UART: {status['hardware']['baud']} baud; battery {status['battery_mv']} mV")
+        position = status.get('position', {})
+        if position.get('enabled'):
+            print(f"Position marker {position['marker_id']}: {position.get('pose') or position.get('reason')}")
         client.stop()
         if args.check:
             # A second status confirms the zero command reached the hardware.

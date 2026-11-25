@@ -199,3 +199,69 @@ asserted for Pico/Pololu USB CDC and left low for native ESP32 USB. Replace
 `python -m mpremote` with `python tools/mpremote_no_reset.py` when using it.
 Add `resume` to avoid mpremote's automatic soft reset; entering the REPL still
 interrupts a running application, so reset afterward to restart the endpoint.
+
+## Optional marker pose on the Pico W
+
+`pose_client.py` is an independent, non-blocking unicast subscriber. Applications
+may use it with or without the velocity endpoint or Zumo hardware client.
+Marker ID defaults to **1**. Enable/use it only when the application needs GPS
+feedback; receiving a packet does not imply the robot's marker is visible.
+
+```python
+from pose_client import PoseSubscriber
+
+position = PoseSubscriber('192.168.12.1', marker_id=1)
+# Inside your existing application/control loop:
+position.poll()
+pose = position.pose
+if pose is not None:
+    x_m, y_m, heading_deg = pose['x'], pose['y'], pose['angle']
+else:
+    reason = position.reason  # e.g. marker_not_visible or stale_telemetry
+# Call position.close() when shutting down (or use a with block).
+```
+
+The module sends `POSE_SUBSCRIBE` once per second to the server's subscription
+port (5001 by default) from its ephemeral receiving socket. It never binds the
+broadcast port or changes Wi-Fi settings. Connect Wi-Fi before constructing it.
+It sends `POSE_UNSUBSCRIBE` on close. `poll()` handles at most four packets per
+call, so it can coexist with the motor command loop. The application must call
+it regularly; there is no background thread.
+
+`position.pose` returns `None` if the board/marker is absent, the feed is stale,
+or the camera frame is too old. Default validity is 500 ms, counting both the
+frame age reported by the server and elapsed local time since reception. Remote
+network transit time is not measured because the clocks are unsynchronized.
+Coordinates/angle use the existing vision feed convention (meters/degrees);
+no coordinate transform is applied. The module filters by server IP and
+subscription port and ignores older frame sequences within a stream.
+`position.status()` distinguishes packet reception from marker visibility.
+Some MicroPython socket builds cannot expose the ephemeral local port; status
+reports `local_port: null` on those builds, and reception still works normally.
+
+The optional velocity-service integration is **disabled by default**. Install
+`pose_client.py`, copy `pose_config.example.json` to the Pico W as
+`pose_config.json`, and change `enabled` to `true` when needed:
+
+```text
+python tools/mpremote_no_reset.py connect COM8 fs cp robot_firmware/pico_w/pose_client.py :pose_client.py + fs cp robot_firmware/pico_w/pose_config.example.json :pose_config.json + reset
+```
+
+The shipped example installs it disabled; an enabled configuration looks like:
+
+```json
+{"enabled": true, "server": "192.168.12.1", "marker_id": 1, "port": 5000, "stale_ms": 500}
+```
+
+Use the vision server's advertised hotspot/LAN IP. `subscription_port` may
+also be set if it differs from `port + 1`. Restart the Pico W after changing
+the config. Invalid optional configuration is reported and disables the
+subscriber without preventing teleoperation. Missing/stale pose never stops
+manual driving automatically; autonomous applications must decide their own
+pose-loss policy. The existing command/motor timeouts remain independent.
+
+The host client's `get_status()` includes a `position` object, and `--check`
+prints pose state when enabled. A read-only diagnostic can be run with
+`python tools/mpremote_no_reset.py connect COM8 resume run robot_firmware/pico_w/pose_check.py`.
+It assumes the Pico W is already connected to Wi-Fi and tests server
+`192.168.12.1`, marker 1. Reset afterward to restart the velocity endpoint.

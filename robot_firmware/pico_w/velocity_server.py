@@ -15,8 +15,9 @@ PROTOCOL = 'zumo-hw-udp-v1'
 
 
 class VelocityServer:
-    def __init__(self, car, wlan):
+    def __init__(self, car, wlan, pose=None):
         self.car, self.wlan = car, wlan
+        self.pose = pose
         self.mac = binascii.hexlify(wlan.config('mac')).decode()
         self.owner = None
         self.last_sequence = -1
@@ -41,6 +42,8 @@ class VelocityServer:
             raise
 
     def close(self):
+        if self.pose:
+            self.pose.close()
         for sock in self.sockets:
             sock.close()
         self.sockets = []
@@ -76,7 +79,8 @@ class VelocityServer:
                                                ip=self.wlan.ifconfig()[0], hardware=info,
                                                pwm=self.pwm, hardware_pwm=sample['motor_pwm'],
                                                encoders=sample['encoders'], battery_mv=sample['battery_mv'],
-                                               commands=self.commands, network_stops=self.network_stops))
+                                               commands=self.commands, network_stops=self.network_stops,
+                                               position=self.pose.status() if self.pose else dict(enabled=False)))
                 return
             left, right = data.get('l'), data.get('r')
             if type(left) is not int or type(right) is not int or abs(left) > 6000 or abs(right) > 6000:
@@ -111,11 +115,15 @@ class VelocityServer:
     def run(self):
         print('VELOCITY_READY ip={} discovery={} commands={} protocol={}'.format(
             self.wlan.ifconfig()[0], DISCOVERY_PORT, COMMAND_PORT, PROTOCOL))
+        if self.pose:
+            print('POSE_ENABLED server={} marker={}'.format(self.pose.server, self.pose.marker_id))
         try:
             while self.wlan.isconnected():
                 if self.owner and time.ticks_diff(time.ticks_ms(), self.last_command_ms) >= COMMAND_TIMEOUT_MS:
                     self.stop()
                     self.network_stops += 1
+                if self.pose:
+                    self.pose.poll()
                 for sock, event in self.poller.poll(5):
                     if not event & select.POLLIN:
                         continue
@@ -134,6 +142,23 @@ class VelocityServer:
                             self.handle(sock, address, raw)
         finally:
             self.close()
+
+
+def optional_pose():
+    try:
+        with open('pose_config.json') as file:
+            config = json.load(file)
+        if config.get('enabled') is not True:
+            return None
+        from pose_client import PoseSubscriber
+        return PoseSubscriber(config.get('server', '192.168.12.1'),
+                              marker_id=config.get('marker_id', 1), port=config.get('port', 5000),
+                              subscription_port=config.get('subscription_port'), stale_ms=config.get('stale_ms', 500))
+    except OSError as error:
+        print('Optional pose unavailable/disabled:', error)
+    except (ValueError, TypeError, AttributeError, ImportError) as error:
+        print('Invalid optional pose config; disabled:', error)
+    return None
 
 
 def main():
@@ -160,7 +185,7 @@ def main():
                         time.sleep_ms(100)
                     if not wlan.isconnected():
                         raise OSError('Wi-Fi connection timeout')
-                VelocityServer(car, wlan).run()
+                VelocityServer(car, wlan, pose=optional_pose()).run()
             except OSError as error:
                 print('Velocity server retry:', error)
                 try:
