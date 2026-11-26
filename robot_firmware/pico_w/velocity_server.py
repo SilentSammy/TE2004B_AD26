@@ -82,6 +82,14 @@ class VelocityServer:
                                                commands=self.commands, network_stops=self.network_stops,
                                                position=self.pose.status() if self.pose else dict(enabled=False)))
                 return
+            if data.get('op') == 'sensors':
+                mask = data.get('mask', p.LINE | p.PROXIMITY)
+                if type(mask) is not int or mask < 0 or mask & ~p.ALL:
+                    raise ValueError('invalid sensor mask')
+                sample = self.car.read_sensors(mask)
+                self.reply(sock, address, dict(ok=True, seq=seq, session=session,
+                                               protocol=PROTOCOL, sensors=sample))
+                return
             left, right = data.get('l'), data.get('r')
             if type(left) is not int or type(right) is not int or abs(left) > 6000 or abs(right) > 6000:
                 raise ValueError('l and r must be integers in -6000..6000')

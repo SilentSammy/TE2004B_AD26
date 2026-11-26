@@ -99,6 +99,7 @@ class DifferentialPWMClient:
         max_pwm: int = 6000,
         resolution: float = RESOLUTION,
         heartbeat_seconds: float = HEARTBEAT_SECONDS,
+        read_only: bool = False,
     ) -> None:
         if not 0 < max_pwm <= PWM_LIMIT:
             raise ValueError(f"max_pwm must be between 1 and {PWM_LIMIT}")
@@ -108,6 +109,7 @@ class DifferentialPWMClient:
         self.max_pwm = max_pwm
         self.resolution = resolution
         self.heartbeat_seconds = heartbeat_seconds
+        self.read_only = read_only
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._socket.setblocking(False)
         self.session = secrets.token_hex(8)
@@ -154,7 +156,14 @@ class DifferentialPWMClient:
 
     def get_status(self, timeout=1.5):
         """Verify the Wi-Fi endpoint and its physical Zumo hardware connection."""
-        sequence = self._send(dict(op='status'))
+        return self._query(dict(op='status'), timeout)
+
+    def get_sensors(self, mask=6, timeout=.75):
+        """Read hardware; mask 6 selects downward IR and proximity sensors."""
+        return self._query(dict(op='sensors', mask=mask), timeout)['sensors']
+
+    def _query(self, message, timeout):
+        sequence = self._send(message)
         deadline = time.monotonic() + timeout
         retry_at = time.monotonic() + .2
         while time.monotonic() < deadline:
@@ -162,8 +171,8 @@ class DifferentialPWMClient:
             if self.last_ack and self.last_ack.get('seq') == sequence:
                 return self.last_ack
             if time.monotonic() >= retry_at:
-                # Status requests are idempotent; UDP can drop a burst.
-                self._socket.sendto(json.dumps(dict(op='status', seq=sequence, session=self.session)).encode(), self.target)
+                # Read requests are idempotent; UDP can drop a burst.
+                self._socket.sendto(json.dumps(message).encode(), self.target)
                 retry_at = time.monotonic() + .2
             time.sleep(0.005)
         raise TimeoutError('No Zumo hardware endpoint replied; check Pico W Wi-Fi and UART wiring.')
@@ -180,6 +189,8 @@ class DifferentialPWMClient:
         """Send wheel PWM values in the documented -6000..6000 range."""
         if self._closed:
             raise RuntimeError("Client is closed")
+        if self.read_only:
+            raise RuntimeError('This connection only reads hardware')
         self._receive()
         if self._cached_pwm not in (None, (0, 0)) and time.monotonic() - self._last_ack_at > 0.5:
             raise TimeoutError('Pico W acknowledgments stopped; ending control.')
@@ -213,15 +224,34 @@ class DifferentialPWMClient:
         if not self._closed:
             try:
                 # Send stops even if an earlier rejection is waiting unread.
-                for _ in range(3):
-                    self._send(dict(l=0, r=0))
-                    time.sleep(.02)
+                if not self.read_only:
+                    for _ in range(3):
+                        self._send(dict(l=0, r=0))
+                        time.sleep(.02)
             finally:
                 self._socket.close()
                 self._closed = True
 
 
-def main() -> None:
+def format_ir_readings(sample):
+    line = ' '.join(f'{value:4d}' for value in sample['line'])
+    proximity = sample['proximity']
+    return (f'IR line raw (L->R): [{line}]\n'
+            f'IR proximity (left-emitter, right-emitter counts): '
+            f'left={tuple(proximity[0])} front={tuple(proximity[1])} right={tuple(proximity[2])}\n'
+            f"Acquisition: {sample['sample_us'] / 1000:.2f} ms")
+
+
+def read_ir_snapshot(robot_ip, port):
+    # Separate socket/session lets keyboard motor updates continue during reads.
+    reader = DifferentialPWMClient(robot_ip, port, read_only=True)
+    try:
+        return reader.get_sensors()
+    finally:
+        reader.close()
+
+
+def main(ir_hotkey=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("robot_ip", nargs="?", help="Pico W IPv4 address (auto-discover if omitted)")
     parser.add_argument("--broadcast", default=None, help="discovery broadcast address (default: auto-detected)")
@@ -229,6 +259,9 @@ def main() -> None:
     parser.add_argument("--gamepad", type=int, default=0)
     parser.add_argument("--max-pwm", type=int, default=3000, help="PWM limit, 1..6000 (default: 3000)")
     parser.add_argument('--check', action='store_true', help='verify Wi-Fi/UART and send stop commands, then exit')
+    if ir_hotkey is not None:
+        parser.add_argument('--ir-key', default=ir_hotkey, help='print IR sensors on this key press (default: i)')
+        parser.add_argument('--read-ir', action='store_true', help='print one IR snapshot without starting keyboard control')
     args = parser.parse_args()
 
     if args.robot_ip is None:
@@ -240,7 +273,10 @@ def main() -> None:
             parser.exit(1, "No robots found. Wait for Pico W Wi-Fi startup or supply its IP.\n")
         print(f"Using robot at {args.robot_ip}")
 
-    client = DifferentialPWMClient(args.robot_ip, args.port, max_pwm=args.max_pwm)
+    read_only = ir_hotkey is not None and args.read_ir
+    client = DifferentialPWMClient(args.robot_ip, args.port, max_pwm=args.max_pwm, read_only=read_only)
+    sensor_worker = None
+    sensor_future = None
 
     try:
         status = client.get_status()
@@ -249,6 +285,9 @@ def main() -> None:
         position = status.get('position', {})
         if position.get('enabled'):
             print(f"Position marker {position['marker_id']}: {position.get('pose') or position.get('reason')}")
+        if read_only:
+            print(format_ir_readings(client.get_sensors()))
+            return
         client.stop()
         if args.check:
             # A second status confirms the zero command reached the hardware.
@@ -258,19 +297,36 @@ def main() -> None:
             print('Wi-Fi -> Pico W -> Zumo verified; motors stopped.')
             return
         import combined_input as inp
+        if ir_hotkey is not None:
+            from concurrent.futures import ThreadPoolExecutor
+            sensor_worker = ThreadPoolExecutor(max_workers=1)
+            print(f'{args.ir_key.upper()}: print IR sensor readings (once per press)')
         print(f"Sending wheel PWM (limit {args.max_pwm})")
         print("W/S or left stick: forward/reverse")
         print("A/D or right stick: rotate; C/RT: boost; Ctrl+C: stop")
         while True:
             x, w = _user_velocity(inp, args.gamepad)
             client.set_velocity(x, w)
+            if sensor_worker:
+                if sensor_future and sensor_future.done():
+                    try:
+                        print(format_ir_readings(sensor_future.result()))
+                    except (OSError, RuntimeError, ValueError, KeyError) as error:
+                        print(f'IR read failed: {error}')
+                    sensor_future = None
+                if inp.rising_edge(args.ir_key) and sensor_future is None:
+                    sensor_future = sensor_worker.submit(read_ir_snapshot, args.robot_ip, args.port)
             time.sleep(UPDATE_SECONDS)
     except KeyboardInterrupt:
         print("\nStopping.")
     except (OSError, RuntimeError, ValueError) as error:
         parser.exit(1, f'Control stopped: {error}\n')
     finally:
-        client.close()
+        try:
+            client.close()
+        finally:
+            if sensor_worker:
+                sensor_worker.shutdown(wait=False, cancel_futures=True)
 
 
 if __name__ == "__main__":

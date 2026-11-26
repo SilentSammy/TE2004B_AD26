@@ -194,6 +194,18 @@ The previous Pico W startup is backed up locally at
 `mpremote ... fs cp` if returning to a standalone Pico W application.
 It is also retained on the Pico W as `main_uart_example.py`.
 
+For keyboard driving with sensor inspection, run `python host_ir_control.py`.
+W/S and A/D (or gamepad sticks) drive normally; press **I** to print one IR
+snapshot. `--ir-key KEY` changes the hotkey. Downward line readings are shown
+left-to-right as raw values, and proximity readings show left/front/right
+receiver counts for each emitter (counts, not distances in centimeters).
+The snapshot request uses a separate read-only UDP connection in a worker,
+so it does not pause the keyboard loop or renew/stop a motor-control lease.
+`python host_ir_control.py --read-ir` prints one snapshot and exits without
+sending motor commands. Both modes require the updated `velocity_server.py`
+on the Pico W. Sensor read failures are printed without ending manual control;
+the existing independent motor/command timeouts still apply.
+
 `tools/mpremote_no_reset.py` provides board-aware USB line handling: DTR is
 asserted for Pico/Pololu USB CDC and left low for native ESP32 USB. Replace
 `python -m mpremote` with `python tools/mpremote_no_reset.py` when using it.

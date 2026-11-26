@@ -26,6 +26,8 @@ class ClientTransportTests(unittest.TestCase):
                                 protocol=PROTOCOL)
                 if message.get('op') == 'status':
                     response.update(hardware={'baud': 921600}, hardware_pwm=[0, 0], battery_mv=6600)
+                elif message.get('op') == 'sensors':
+                    response['sensors'] = dict(line=[1, 2, 3, 4, 5], proximity=[[0, 1], [2, 3], [4, 5]], sample_us=15000)
                 server.sendto(json.dumps(response).encode(), address)
 
         worker = threading.Thread(target=serve, daemon=True)
@@ -44,6 +46,15 @@ class ClientTransportTests(unittest.TestCase):
             self.assertTrue(all((m['l'], m['r']) == (0, 0) for m in motors[-3:]))
             self.assertEqual(len({m['session'] for m in messages}), 1)
             self.assertEqual([m['seq'] for m in messages], sorted({m['seq'] for m in messages}))
+            before = len(messages)
+            reader = DifferentialPWMClient('127.0.0.1', server.getsockname()[1], read_only=True)
+            try:
+                self.assertEqual(reader.get_sensors()['line'], [1, 2, 3, 4, 5])
+                with self.assertRaises(RuntimeError):
+                    reader.set_pwm(0, 0)
+            finally:
+                reader.close()
+            self.assertTrue(all(m.get('op') == 'sensors' for m in messages[before:]))
         finally:
             if not client._closed:
                 client.close()
