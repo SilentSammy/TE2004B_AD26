@@ -1,71 +1,67 @@
-import json
-import socket
-import threading
-import time
+import asyncio
+import struct
 import unittest
-from host_velocity_client import DifferentialPWMClient, PROTOCOL
+from host_velocity_client import DifferentialPWMClient
+from robot_firmware.pico_w import ble_protocol as bp
+from zumo_ble import BLETransport
 
 
-class ClientTransportTests(unittest.TestCase):
-    def test_status_mixing_cached_heartbeat_and_final_stop_over_udp(self):
-        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        server.bind(('127.0.0.1', 0))
-        server.settimeout(.02)
-        messages = []
-        finished = threading.Event()
+def snapshot():
+    fields = [0] * 31
+    fields[13:18] = [1, 2, 3, 4, 5]
+    fields[24] = 6600
+    return struct.pack(bp.wire.SNAPSHOT_FORMAT, *fields)
 
-        def serve():
-            while not finished.is_set():
-                try:
-                    raw, address = server.recvfrom(4096)
-                except (socket.timeout, ConnectionResetError):
-                    continue
-                message = json.loads(raw)
-                messages.append(message)
-                response = dict(ok=True, seq=message['seq'], session=message['session'],
-                                protocol=PROTOCOL)
-                if message.get('op') == 'status':
-                    response.update(hardware={'baud': 921600}, hardware_pwm=[0, 0], battery_mv=6600)
-                elif message.get('op') == 'sensors':
-                    response['sensors'] = dict(line=[1, 2, 3, 4, 5], proximity=[[0, 1], [2, 3], [4, 5]], sample_us=15000)
-                server.sendto(json.dumps(response).encode(), address)
 
-        worker = threading.Thread(target=serve, daemon=True)
-        worker.start()
-        client = DifferentialPWMClient('127.0.0.1', server.getsockname()[1])
-        try:
-            self.assertEqual(client.get_status()['hardware']['baud'], 921600)
-            client.set_velocity(.6, .2)
-            client.set_velocity(.6, .2)
-            time.sleep(.03)
-            client.close()
-            time.sleep(.03)
-            motors = [m for m in messages if 'l' in m]
-            self.assertEqual((motors[0]['l'], motors[0]['r']), (2400, 4800))
-            self.assertEqual(len(motors), 4)  # one update, three explicit final stops
-            self.assertTrue(all((m['l'], m['r']) == (0, 0) for m in motors[-3:]))
-            self.assertEqual(len({m['session'] for m in messages}), 1)
-            self.assertEqual([m['seq'] for m in messages], sorted({m['seq'] for m in messages}))
-            before = len(messages)
-            reader = DifferentialPWMClient('127.0.0.1', server.getsockname()[1], read_only=True)
-            try:
-                self.assertEqual(reader.get_sensors()['line'], [1, 2, 3, 4, 5])
-                with self.assertRaises(RuntimeError):
-                    reader.set_pwm(0, 0)
-            finally:
-                reader.close()
-            self.assertTrue(all(m.get('op') == 'sensors' for m in messages[before:]))
-        finally:
-            if not client._closed:
-                client.close()
-            finished.set()
-            worker.join(1)
-            server.close()
+class FakeTransport:
+    def __init__(self):
+        self.messages = []
+        self.closed = False
 
-    def test_missing_endpoint_fails_status_check(self):
-        client = DifferentialPWMClient('127.0.0.1', 9)
-        try:
-            with self.assertRaises(TimeoutError):
-                client.get_status(timeout=.05)
-        finally:
-            client.close()
+    def request(self, op, payload=b'', timeout=1):
+        self.messages.append((op, payload))
+        if op == bp.wire.MOTORS:
+            return payload
+        if op == bp.wire.READ:
+            return snapshot()
+        if op == bp.STATUS:
+            return bp.status_payload(struct.pack('<IIHH', 921600, 250, 31, 64), snapshot(), 2, 0)
+        raise ValueError('unexpected command')
+
+    def close(self):
+        self.closed = True
+
+
+class ClientTests(unittest.TestCase):
+    def test_mixing_cache_and_close_stop(self):
+        transport = FakeTransport()
+        client = DifferentialPWMClient(transport=transport)
+        client.set_velocity(.6, .2)
+        client.set_velocity(.6, .2)
+        self.assertEqual(len(transport.messages), 1)
+        self.assertEqual(struct.unpack('<hh', transport.messages[0][1]), (2400, 4800))
+        client.close()
+        self.assertEqual(struct.unpack('<hh', transport.messages[-1][1]), (0, 0))
+        self.assertTrue(transport.closed)
+
+    def test_read_only_and_status_codec(self):
+        transport = FakeTransport()
+        client = DifferentialPWMClient(transport=transport, read_only=True)
+        self.assertEqual(client.get_status()['hardware']['baud'], 921600)
+        self.assertEqual(client.get_sensors()['line'], (1, 2, 3, 4, 5))
+        with self.assertRaises(RuntimeError):
+            client.set_pwm(0, 0)
+        client.close()
+        self.assertNotIn(bp.wire.MOTORS, [op for op, _ in transport.messages])
+
+    def test_fragmented_notifications_complete_the_matching_request(self):
+        async def check():
+            transport = BLETransport.__new__(BLETransport)
+            transport.parser = bp.wire.Parser()
+            future = asyncio.get_running_loop().create_future()
+            transport.pending = {7: future}
+            packet = bp.wire.frame(bp.wire.MOTORS | 0x80, 7, struct.pack('<hh', 0, 0))
+            for offset in range(0, len(packet), 3):
+                transport._notification(None, bytearray(packet[offset:offset + 3]))
+            self.assertEqual(await future, (bp.wire.MOTORS | 0x80, struct.pack('<hh', 0, 0)))
+        asyncio.run(check())

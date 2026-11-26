@@ -3,3 +3,4 @@ opencv-contrib-python==4.11.0.86
 inputs==0.5
 pyserial==3.5
 pynput==1.8.1
+bleak==1.0.1

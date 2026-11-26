@@ -1,3 +1,3 @@
-"""Optional Pico W main.py for host_velocity_client.py Wi-Fi teleoperation."""
+"""Legacy opt-in UDP startup. Current host controllers use ble_main.py."""
 import velocity_server
 velocity_server.main()

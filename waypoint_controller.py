@@ -1,9 +1,8 @@
 """Follow a fixed set of waypoints using pose telemetry from main.py.
 
 Listens for main.py's UDP telemetry broadcast (no subscription needed, just
-bind to the port) and drives a robot discovered via
-arduino/dual_channel_relay/dual_channel_relay.ino, same as
-host_velocity_client.py.
+bind to the port) and drives the Pico W/Zumo hardware server over BLE,
+using the same transport as host_velocity_client.py.
 """
 
 import argparse
@@ -13,7 +12,7 @@ import time
 
 import numpy as np
 
-from host_velocity_client import DifferentialPWMClient, discover, guess_broadcast, select_robot
+from host_velocity_client import DifferentialPWMClient, choose_device
 
 TELEMETRY_PORT = 5000
 ROBOT_ID = 0
@@ -85,30 +84,22 @@ def distance_authority(angle_error):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("robot_ip", nargs="?", help="Pico W IPv4 address (auto-discover if omitted)")
-    parser.add_argument("--broadcast", default=None, help="robot discovery broadcast address (default: auto-detected)")
+    parser.add_argument("device", nargs="?", help="BLE name or address (discover if omitted)")
     parser.add_argument("--telemetry-port", type=int, default=TELEMETRY_PORT, help="port main.py broadcasts telemetry on")
     parser.add_argument("--robot-id", type=int, default=ROBOT_ID, help="marker ID to track as this robot")
     args = parser.parse_args()
 
-    robot_ip = args.robot_ip
-    if robot_ip is None:
-        broadcast = args.broadcast or guess_broadcast()
-        print(f"Discovering robots via {broadcast}...")
-        robots = discover(broadcast)
-        robot_ip = select_robot(robots)
-        if robot_ip is None:
-            print("No robots found. Use --help for usage.")
-            return
-        print(f"Using robot at {robot_ip}")
+    device = choose_device(args.device)
 
     poses = PoseListener(args.telemetry_port)
-    client = DifferentialPWMClient(robot_ip)
+    client = DifferentialPWMClient(device)
     waypoint_index = 0
     last_debug = time.monotonic()
     last_seen = time.monotonic()
 
     try:
+        client.get_status()
+        client.stop()
         while True:
             command_x = 0.0
             command_w = 0.0

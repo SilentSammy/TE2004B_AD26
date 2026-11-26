@@ -151,58 +151,64 @@ python -m mpremote connect COM3 fs cp .firmware_backups/zumo-before-hardware-ser
 The old `remote_control.py` and Pololu examples remain on the Zumo unchanged.
 The Pico W filesystem was empty before this installation.
 
-## Wi-Fi control from the laptop
+## BLE control from the laptop
 
-`host_velocity_client.py` now uses a Pico W endpoint that calls this hardware
-API directly. The old Arduino UDP relay and Zumo `remote_control.py` are not
-part of this command path. Install the optional teleoperation startup on the
-Pico W (the Zumo hardware server firmware stays the same):
+`host_velocity_client.py` and `host_ir_control.py` use BLE for motor commands,
+status, sensors and LED/buzzer/display access. Wi-Fi is only needed for optional
+ArUco pose reception. The laptop can remain on Tec or another Wi-Fi network.
+The Zumo UART hardware server stays the same. Install the BLE endpoint:
 
 ```text
-python -m mpremote connect COM8 fs cp robot_firmware/pico_w/velocity_server.py :velocity_server.py + fs cp robot_firmware/pico_w/velocity_main.py :main.py + reset
+python tools/mpremote_no_reset.py connect COM8 fs cp robot_firmware/zumo_hardware/hw_protocol.py :hw_protocol.py + fs cp robot_firmware/pico_w/zumo_client.py :zumo_client.py + fs cp robot_firmware/pico_w/ble_protocol.py :ble_protocol.py + fs cp robot_firmware/pico_w/ble_server.py :ble_server.py + fs cp robot_firmware/pico_w/ble_main.py :main.py + reset
 ```
 
-It joins `embedded` by default. To use another network, create `wifi_config.json`
-on the Pico W with `ssid` and `password` keys. The server prints its IP and ports
-over USB. Discovery uses UDP 5001; wheel commands/status/acknowledgments use UDP
-5002. Join the same reachable LAN on the laptop, then run:
+Install host dependencies with `python -m pip install -r requirements.txt`.
+The default advertised name is `zumo1`; optional Pico W `ble_config.json` can
+set `{"name": "zumo2"}` (1..8 UTF-8 bytes). Enable laptop Bluetooth, then run:
 
 ```text
 python host_velocity_client.py --check
 python host_velocity_client.py
-python host_velocity_client.py 192.168.12.45 --check
-python host_velocity_client.py --broadcast 192.168.12.255 --max-pwm 1500
+python host_velocity_client.py zumo1 --check
+python host_ir_control.py zumo1 --max-pwm 1500
 ```
 
 `--check` only sends status and stop commands. Normal mode uses W/S and A/D,
 or the gamepad sticks, with C/right trigger for boost. It verifies the Pico W
 protocol and physical Zumo UART connection before enabling controls. It sends
-unchanged moving commands every 100 ms, stops on Ctrl+C/error, and exits if
-acknowledgments stop for 500 ms. The Pico W and Zumo each enforce a 250 ms
-command timeout. Discovery uses the actual local subnet masks rather than
-assuming the default internet interface is the robot network; `--broadcast`
-can override it.
+unchanged moving commands every 100 ms and stops on Ctrl+C/error. Each motor
+write receives a hardware acknowledgment. The Pico W and Zumo each enforce a
+250 ms command timeout; BLE disconnect also stops the motors. Only one BLE
+central controls the robot at once. After connection loss, restart the host
+script; pending motor commands are not replayed after reconnecting.
 
-Commands contain integer `l`/`r` PWM, a random host session ID and an increasing
-sequence number. Stale nonzero commands are rejected, and only one active
-client owns nonzero control. Any client may send a stop. A host session ID is
-for ordering, not authentication; use this service on the trusted robot LAN.
-The endpoint does not change the Zumo firmware or forward UDP packets blindly.
+The BLE endpoint uses Nordic UART service UUIDs with the same versioned binary
+framing and CRC32 as UART. Sequence IDs match concurrent requests to replies.
+Motor messages fit in one 20-byte ATT payload; longer sensor/status replies are
+fragmented and reassembled. No special pairing step is required. The host uses
+Bleak 1.0.1 on a dedicated asyncio thread. `get_sensors(mask)`,
+`reset_encoders()`, `led()`, `buzzer()` and `display()` use the same connection.
+Snapshot reads are not a continuous BLE stream; the earlier 100/50 Hz results
+describe the local Pico W/UART link.
+
+The UDP endpoint files remain as legacy examples, but are not started by
+`ble_main.py`; the host scripts no longer use UDP control sockets.
 
 The previous Pico W startup is backed up locally at
 `.firmware_backups/pico-before-velocity-server/main.py`; restore it with
 `mpremote ... fs cp` if returning to a standalone Pico W application.
 It is also retained on the Pico W as `main_uart_example.py`.
+The UDP startup is separately backed up at `.firmware_backups/pico-before-ble/main.py`.
 
 For keyboard driving with sensor inspection, run `python host_ir_control.py`.
 W/S and A/D (or gamepad sticks) drive normally; press **I** to print one IR
 snapshot. `--ir-key KEY` changes the hotkey. Downward line readings are shown
 left-to-right as raw values, and proximity readings show left/front/right
 receiver counts for each emitter (counts, not distances in centimeters).
-The snapshot request uses a separate read-only UDP connection in a worker,
-so it does not pause the keyboard loop or renew/stop a motor-control lease.
+The snapshot request runs in a worker on the existing BLE connection,
+so it does not pause the keyboard loop or open another central connection.
 `python host_ir_control.py --read-ir` prints one snapshot and exits without
-sending motor commands. Both modes require the updated `velocity_server.py`
+sending motor commands. Both modes require the updated `ble_server.py`
 on the Pico W. Sensor read failures are printed without ending manual control;
 the existing independent motor/command timeouts still apply.
 
@@ -215,7 +221,7 @@ interrupts a running application, so reset afterward to restart the endpoint.
 ## Optional marker pose on the Pico W
 
 `pose_client.py` is an independent, non-blocking unicast subscriber. Applications
-may use it with or without the velocity endpoint or Zumo hardware client.
+may use it with or without the BLE endpoint or Zumo hardware client.
 Marker ID defaults to **1**. Enable/use it only when the application needs GPS
 feedback; receiving a packet does not imply the robot's marker is visible.
 
@@ -251,7 +257,7 @@ subscription port and ignores older frame sequences within a stream.
 Some MicroPython socket builds cannot expose the ephemeral local port; status
 reports `local_port: null` on those builds, and reception still works normally.
 
-The optional velocity-service integration is **disabled by default**. Install
+The optional BLE-service integration is **disabled by default**. Install
 `pose_client.py`, copy `pose_config.example.json` to the Pico W as
 `pose_config.json`, and change `enabled` to `true` when needed:
 
@@ -266,7 +272,14 @@ The shipped example installs it disabled; an enabled configuration looks like:
 ```
 
 Use the vision server's advertised hotspot/LAN IP. `subscription_port` may
-also be set if it differs from `port + 1`. Restart the Pico W after changing
+also be set if it differs from `port + 1`. BLE control remains available while
+Wi-Fi connects/retries asynchronously. Wi-Fi credentials come from
+`wifi_config.json` (`ssid` and `password`), defaulting to the lab `embedded`
+network. When pose reception is disabled, BLE needs no Wi-Fi connection.
+The host receives compact pose availability/coordinates in its BLE status.
+Additional diagnostic subscriber counters remain available on the Pico W.
+
+Restart the Pico W after changing
 the config. Invalid optional configuration is reported and disables the
 subscriber without preventing teleoperation. Missing/stale pose never stops
 manual driving automatically; autonomous applications must decide their own
@@ -276,4 +289,4 @@ The host client's `get_status()` includes a `position` object, and `--check`
 prints pose state when enabled. A read-only diagnostic can be run with
 `python tools/mpremote_no_reset.py connect COM8 resume run robot_firmware/pico_w/pose_check.py`.
 It assumes the Pico W is already connected to Wi-Fi and tests server
-`192.168.12.1`, marker 1. Reset afterward to restart the velocity endpoint.
+`192.168.12.1`, marker 1. Reset afterward to restart the BLE endpoint.

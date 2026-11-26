@@ -43,3 +43,10 @@ For the Zumo hardware server and Pico W brain/client firmware, see
 [`robot_firmware/README.md`](robot_firmware/README.md). The tested binary UART
 link supports approximately 100 Hz fast sensors or 50 Hz full sensors while
 accepting motor commands, with a motor-command timeout on the Zumo.
+
+Laptop remote control and hardware sensor reads use **BLE**:
+`python host_velocity_client.py` for WASD/gamepad, or `python host_ir_control.py`
+for the same controls plus the **I** sensor hotkey. `--check` verifies the
+stopped-motor path; `host_ir_control.py --read-ir` prints one snapshot. The
+default advertised robot is `zumo1`. Wi-Fi is optional for the Pico W's ArUco
+position subscription and is not needed for remote control.
